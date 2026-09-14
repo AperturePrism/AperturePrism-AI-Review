@@ -91,18 +91,33 @@ async function registryTags(
   service: string,
 ): Promise<string[]> {
   const token = await registryToken(host, service);
-  const url = `https://${host}/v2/${REGISTRY_BASE}/${service}/tags/list`;
-  const response = await fetch(url, {
-    headers: {
-      accept: "application/json",
-      authorization: `Bearer ${token}`,
-      "user-agent": "apertureprism-updater",
-    },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new Error(`registry ${response.status}`);
-  const data = (await response.json()) as { tags?: string[] };
-  return data.tags ?? [];
+  const tags: string[] = [];
+  // GHCR 的 tags/list 可能分页（随 tag 增多返回子集）。逐页拉全，直到无 next
+  // 分页指针；镜像站若实现分页也同样适用，避免把“最新”错判成某个旧子集。
+  let last = "";
+  for (let page = 0; page < 20; page += 1) {
+    const sep = last ? `&last=${encodeURIComponent(last)}` : "";
+    const url = `https://${host}/v2/${REGISTRY_BASE}/${service}/tags/list?n=200${sep}`;
+    const response = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+        "user-agent": "apertureprism-updater",
+      },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!response.ok) throw new Error(`registry ${response.status}`);
+    const data = (await response.json()) as { tags?: string[] };
+    if (Array.isArray(data.tags)) tags.push(...data.tags);
+    // 分页指针：Link: <...?last=<tag>>; rel="next"
+    const link = response.headers.get("link") ?? "";
+    const m = link.match(/[?&]last=[^&>;]+/i);
+    if (!m) break;
+    const nextLast = decodeURIComponent(m[0].replace(/^[?&]last=/, ""));
+    if (!nextLast || nextLast === last) break;
+    last = nextLast;
+  }
+  return tags;
 }
 
 async function registryDigest(
@@ -175,40 +190,48 @@ export async function handleUpdateStatus(
   const current = currentVersion();
   try {
     // ghcr.io 直连超时时自动落到镜像站（9.5），而不是把「未知」甩给用户。
-    const host = await reachableHost();
-    const tags = await fetchLatestTags(host);
-    const latestTag = tags[0];
-    const latestDigest = latestTag ? await registryDigest(host, "web", latestTag) : null;
-    const currentDigest =
-      current !== "unknown" ? await registryDigest(host, "web", current) : null;
-    json(
-      response,
-      200,
-      {
-        current: {
-          version: current,
-          composeProject:
-            process.env.COMPOSE_PROJECT_NAME ?? "apertureprism-ai-review",
-        },
-        latest: {
-          tags: tags.slice(0, 10),
-          version: latestTag ?? null,
-          digest: latestDigest,
-        },
-        updateAvailable: Boolean(
-          latestTag &&
-            current !== latestTag &&
-            latestDigest &&
-            latestDigest !== currentDigest,
-        ),
-        updateChannel: "latest",
-        // 是否正在执行更新（进程内锁）。暴露给前端：更新进行中时禁用「更新到
-        // 最新」按钮，避免刷新后封面按钮可点、一点就撞上 409 update_in_progress
-        // 却看不到任何"正在更新"的提示（#43）。
-        inProgress: updateRunning,
+  const host = await reachableHost();
+  // 只有 ghcr.io 才视作权威、最新的 tag 来源；镜像站元数据可能滞后，若
+  // 被迫落到镜像站要把“来源/是否滞后”一并透出，避免把旧 tag 当“最新”。
+  const primary = host === REGISTRY_HOST;
+  const tags = await fetchLatestTags(host);
+  const latestTag = tags[0];
+  const latestDigest = latestTag ? await registryDigest(host, "web", latestTag) : null;
+  const currentDigest =
+    current !== "unknown" ? await registryDigest(host, "web", current) : null;
+  json(
+    response,
+    200,
+    {
+      current: {
+        version: current,
+        composeProject:
+          process.env.COMPOSE_PROJECT_NAME ?? "apertureprism-ai-review",
       },
-      requestId,
-    );
+      latest: {
+        tags: tags.slice(0, 10),
+        version: latestTag ?? null,
+        digest: latestDigest,
+        // 数据来源与权威性：镜像站的 tags 常滞后于 ghcr.io，UI 应据此刻意弱化
+        // “最新版本”文案，避免误报（曾把镜像站残留的 v1.0.116 当成最新）。
+        source: host,
+        stale: !primary,
+      },
+      updateAvailable: Boolean(
+        latestTag &&
+          current !== latestTag &&
+          latestDigest &&
+          latestDigest !== currentDigest &&
+          primary,
+      ),
+      updateChannel: "latest",
+      // 是否正在执行更新（进程内锁）。暴露给前端：更新进行中时禁用「更新到
+      // 最新」按钮，避免刷新后封面按钮可点、一点就撞上 409 update_in_progress
+      // 却看不到任何"正在更新"的提示（#43）。
+      inProgress: updateRunning,
+    },
+    requestId,
+  );
   } catch {
     json(
       response,
