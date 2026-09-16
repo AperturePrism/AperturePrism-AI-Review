@@ -539,17 +539,24 @@ async function main(): Promise<void> {
       const repositoryFullName = `${context.repository.owner}/${context.repository.name}`;
       // 深度分析（读取仓库源码）默认关闭：会显著增加 token 消耗与耗时。
       const deep = await issueDeepAnalysisEnabled(repositoryFullName);
-      // 决策留痕：tools 是否注入取决于 deep && (defect|feature)，三者任一副不成立都会
-      // 导致模型读不到仓库（无 read_file/list_directory），深读挑错静默失效。
-      const shouldReadRepo =
-        isDefectIssue(context) || isFeatureRequest(context);
+      // 决策留痕：tools 是否注入取决于 deep && (defect|feature|codeRef)，任一不成立
+      // 都会导致模型读不到仓库（无 read_file/list_directory），深读挑错静默失效。
+      // codeRef：deep 已开启且内容引用具体源码文件/扩展名时兜底读仓（#70），
+      // 不依赖标题类型前缀或标签时序。
+      const defect = isDefectIssue(context);
+      const feature = isFeatureRequest(context);
+      const codeRef = CODE_REFERENCE_HINT.test(
+        `${context.issue.title ?? ""}\n${context.issue.body ?? ""}`,
+      );
+      const shouldReadRepo = defect || feature || (deep && codeRef);
       logger.info(
         {
           repo: repositoryFullName,
           subject: context.issue.number,
           deep,
-          defect: isDefectIssue(context),
-          feature: isFeatureRequest(context),
+          defect,
+          feature,
+          codeRef,
           toolsInjected: deep && shouldReadRepo,
         },
         "issue deep decision: tools injection",
@@ -1583,11 +1590,20 @@ async function issueDeepAnalysisEnabled(
 const DEFECT_HINT =
   /bug|fix|fault|defect|error|fail|crash|exception|stack|报错|错误|失败|异常|崩溃|无法|不能|卡死|闪退|坏了|安全|漏洞|泄漏|泄露|性能|慢|卡|风险|review|check|inspect|检查|审查|审阅|看看|哪里错|哪里不对|哪里有问题|哪写错|有问题|帮我看|找.*bug|挑错/i;
 
+const DEFECT_LABEL_HINT = /\b(bug|fault|defect|fix|security|vulnerability)\b/i;
+
+/**
+ * 代码引用兜底（#70）：deep 已开启时，标题/正文若引用具体源码文件或扩展名，
+ * 说明用户期望结合代码分析，即使类型前缀/标签未命中也读仓。
+ */
+const CODE_REFERENCE_HINT =
+  /\b[\w./-]+\.(py|js|ts|tsx|jsx|go|rs|java|c|cpp|h|hpp|sh|json|yaml|yml|toml|sql|md)\b|(源码|代码|实现逻辑|在哪(里|儿)|哪一行|报错位置|如何实现|怎么实现)/i;
+
 function isDefectIssue(context: IssueContext): boolean {
   const issue = context.issue;
-  const hay = `${issue.title ?? ""}\n${issue.body ?? ""}\n${
-    (issue.labels ?? []).join(" ")
-  }`;
+  const labels = issue.labels ?? [];
+  if (labelsMatchHint(labels, DEFECT_LABEL_HINT)) return true;
+  const hay = `${issue.title ?? ""}\n${issue.body ?? ""}`;
   return DEFECT_HINT.test(hay);
 }
 
@@ -1598,13 +1614,24 @@ function isDefectIssue(context: IssueContext): boolean {
  * 相互独立，任一命中都会触发读仓。
  */
 const FEATURE_HINT =
-  /feature|feat|新功能|新增|能否.*(支持|加|添加)|能不能.*(支持|加|添加)|希望.*(支持|加|添加|增加|做|实现)|建议.*(支持|加|添加|增加|做|实现|增强)|增强|优化|加一个|加个|添加.*(功能|支持)|支持.*功能|想要.*(功能|支持)|需求|提议/i;
+  /feature|feat|enhancement|enhance|improvement|feature-request|新功能|新需求|功能请求|特性|新增|能否.*(支持|加|添加)|能不能.*(支持|加|添加)|希望.*(支持|加|添加|增加|做|实现)|建议.*(支持|加|添加|增加|做|实现|增强)|增强|优化|加一个|加个|添加.*(功能|支持)|支持.*功能|想要.*(功能|支持)|需求|提议/i;
+
+/** 标题/正文常见类型前缀（GitHub 模板风格），大小写不敏感、可带 severity。 */
+const TYPE_PREFIX_HINT = /^\[[^\]]*(bug|fix|fault|defect|enhancement|enhance|feature|feat|新功能|优化|需求|问题)[^\]]*\]/i;
+
+/** 标签词边界匹配：兼容 feature-request / Feature Request 等变体（精确 includes 会漏）。 */
+function labelsMatchHint(labels: readonly string[], hint: RegExp): boolean {
+  return labels.some((label) => hint.test(label));
+}
+
+const FEATURE_LABEL_HINT = /\b(feature|feat|enhancement|enhance|feature-request)\b/i;
 
 function isFeatureRequest(context: IssueContext): boolean {
   const issue = context.issue;
   const labels = issue.labels ?? [];
-  if (labels.includes("feature") || labels.includes("enhancement")) return true;
+  if (labelsMatchHint(labels, FEATURE_LABEL_HINT)) return true;
   const hay = `${issue.title ?? ""}\n${issue.body ?? ""}`;
+  if (TYPE_PREFIX_HINT.test(hay)) return true;
   return FEATURE_HINT.test(hay);
 }
 
