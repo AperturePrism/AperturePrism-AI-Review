@@ -158,6 +158,12 @@ export type ModelInvocationRequest = {
   responseFormat?: "text" | "json";
   /** 可选：为模型暴露可调用的工具。 */
   tools?: readonly ModelToolSpec[];
+  /**
+   * 工具选择策略。缺省时若带 tools 则发送 `tool_choice: "auto"`：
+   * 部分网关（如 MiniMax 渠道）对带有 tools 却缺失 tool_choice 的请求
+   * 返回 `invalid tool type (2013)` 400（issue #71/#73）。
+   */
+  toolChoice?: "auto" | "none" | "required";
 };
 
 export type ModelUsage = {

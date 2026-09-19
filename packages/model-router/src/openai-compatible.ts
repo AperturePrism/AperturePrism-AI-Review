@@ -147,7 +147,13 @@ export function createOpenAICompatibleAdapter(
             messages: request.messages.map(toWireMessage),
             ...(request.tools === undefined || request.tools.length === 0
               ? {}
-              : { tools: request.tools }),
+              : {
+                  tools: request.tools,
+                  // 部分网关（MiniMax 渠道）对「带 tools 却缺 tool_choice」的请求
+                  // 返回 invalid tool type (2013) 400（issue #71/#73）。缺省补
+                  // auto；显式指定的值透传。
+                  tool_choice: request.toolChoice ?? "auto",
+                }),
             ...(request.maxOutputTokens === undefined
               ? {}
               : { max_tokens: request.maxOutputTokens }),
