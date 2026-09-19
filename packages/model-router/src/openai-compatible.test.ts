@@ -255,6 +255,25 @@ describe("OpenAI-compatible adapter tool calling", () => {
     >;
     expect(Array.isArray(body.tools)).toBe(true);
     expect((body.tools as { name: string }[])[0]?.name).toBe("read_file");
+    // MiniMax 网关要求带 tools 时必须同时带 tool_choice（issue #71/#73）。
+    expect(body.tool_choice).toBe("auto");
+  });
+
+  it("honors an explicit toolChoice instead of the auto default", async () => {
+    const { adapter, calls } = adapterWith(() =>
+      jsonResponse(completion("done")),
+    );
+    const toolRequest: ModelInvocationRequest = {
+      messages: [{ role: "user", content: "use a tool" }],
+      tools: [{ name: "read_file", description: "read a file" }],
+      toolChoice: "required",
+    };
+    await adapter.invoke(candidate, toolRequest, new AbortController().signal);
+    const body = JSON.parse(String(calls[0]?.init.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(body.tool_choice).toBe("required");
   });
 
   it("omits tools when the request has none", async () => {
