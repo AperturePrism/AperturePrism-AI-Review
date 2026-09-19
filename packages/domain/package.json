@@ -1,7 +1,7 @@
 {
   "name": "@apertureprism/domain",
   "private": true,
-  "version": "1.2.4",
+  "version": "1.2.5",
   "type": "module",
   "scripts": {
     "build": "tsc",
