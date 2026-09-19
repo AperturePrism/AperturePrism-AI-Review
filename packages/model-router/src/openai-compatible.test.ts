@@ -254,7 +254,10 @@ describe("OpenAI-compatible adapter tool calling", () => {
       unknown
     >;
     expect(Array.isArray(body.tools)).toBe(true);
-    expect((body.tools as { name: string }[])[0]?.name).toBe("read_file");
+    const wire = (body.tools as { type?: string; function?: { name?: string } }[])[0];
+    // 网关要求 tools[i].type 必须为 "function"（issue #71/#73）。
+    expect(wire?.type).toBe("function");
+    expect(wire?.function?.name).toBe("read_file");
     // MiniMax 网关要求带 tools 时必须同时带 tool_choice（issue #71/#73）。
     expect(body.tool_choice).toBe("auto");
   });
