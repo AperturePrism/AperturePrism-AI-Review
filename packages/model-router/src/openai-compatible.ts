@@ -6,6 +6,7 @@ import {
   type ModelInvocationResponse,
   type ModelMessage,
   type ModelProviderAdapter,
+  type ModelToolSpec,
 } from "../../../packages/domain/src/index.js";
 
 export type OpenAICompatibleOptions = {
@@ -53,6 +54,29 @@ function toWireMessage(message: ModelMessage): Record<string, unknown> {
     base.tool_call_id = message.toolCallId;
   }
   return base;
+}
+
+/**
+ * 序列化工具定义到 OpenAI wire 格式。内部 ModelToolSpec 只含
+ * name/description/parameters；网关（MiniMax 等）要求 tools[i].type
+ * 必须为 "function"，缺失时返回 invalid tool type 400（issue #71/#73），
+ * 因此这里统一补上，同时补 tool_choice 缺省 auto。
+ */
+function toWireTools(
+  tools: readonly ModelToolSpec[],
+  toolChoice: ModelInvocationRequest["toolChoice"],
+): Record<string, unknown> {
+  return {
+    tools: tools.map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        ...(tool.parameters === undefined ? {} : { parameters: tool.parameters }),
+      },
+    })),
+    tool_choice: toolChoice ?? "auto",
+  };
 }
 
 type ChatCompletionResponse = {
@@ -147,13 +171,7 @@ export function createOpenAICompatibleAdapter(
             messages: request.messages.map(toWireMessage),
             ...(request.tools === undefined || request.tools.length === 0
               ? {}
-              : {
-                  tools: request.tools,
-                  // 部分网关（MiniMax 渠道）对「带 tools 却缺 tool_choice」的请求
-                  // 返回 invalid tool type (2013) 400（issue #71/#73）。缺省补
-                  // auto；显式指定的值透传。
-                  tool_choice: request.toolChoice ?? "auto",
-                }),
+              : toWireTools(request.tools, request.toolChoice)),
             ...(request.maxOutputTokens === undefined
               ? {}
               : { max_tokens: request.maxOutputTokens }),
