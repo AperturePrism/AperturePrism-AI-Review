@@ -118,6 +118,12 @@ const retryDelayMs = 30_000;
 /** Shared logical deadline for the main analysis call and the bounded repair.
  *  2026-08 提到 10min：图片多模态（视觉模型）的处理耗时可超 5min。 */
 const analysisDeadlineMs = 600_000;
+/**
+ * 深读（读仓 + 工具循环多轮）单独预算：每轮工具循环携带已读源码的大上下文，
+ * reasoning 模型单轮推理可能耗时 1-3 分钟，4 轮 + 主分析在 600s 内跑不完导致
+ * `candidate exceeded deadline` 超时（issue #71/#73 深读现场）。给 15 分钟。
+ */
+const deepAnalysisDeadlineMs = 900_000;
 const analysisRetryPolicy = {
   maxAttemptsPerCandidate: 5,
   baseDelayMs: 1_000,
@@ -730,7 +736,10 @@ async function main(): Promise<void> {
           return fallback;
         }
       }
-      return analyzeIssue(buildAnalysisOptions(issueCandidates, analysisDeadlineMs), ctx);
+      // 深读（读仓+工具循环）单独给更大 deadline，避免大上下文多轮推理超时。
+      const deadlineMs =
+        deep && shouldReadRepo ? deepAnalysisDeadlineMs : analysisDeadlineMs;
+      return analyzeIssue(buildAnalysisOptions(issueCandidates, deadlineMs), ctx);
     },
 
     recallRelated: async (context) => {
