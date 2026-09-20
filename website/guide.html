@@ -6,10 +6,15 @@
   <title>部署与配置教程 — AperturePrism</title>
   <meta name="description" content="AperturePrism 完整部署与配置教程：一键安装、环境变量、GitHub App 与 OAuth、模型路由与嵌入模型、WebUI 初始化、能力开关、QQ 机器人、备份恢复、在线更新与常见问题。" />
   <meta property="og:title" content="部署与配置教程 — AperturePrism" />
+  <meta property="og:image" content="assets/og-image.jpg" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/favicon.png" />
   <link rel="preload" href="assets/fonts/cabinet-800.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist-mono.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="assets/style.css?v=5" />
+  <link rel="stylesheet" href="assets/style.css?v=13" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到正文</a>
@@ -26,6 +31,7 @@
         <a href="index.html#console">控制台</a>
         <a href="#overview" class="active">配置教程</a>
         <a href="changelog.html">更新日志</a>
+        <a href="architecture.html">架构</a>
       </nav>
       <div class="nav__actions">
         <a class="btn btn--ghost" href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub</a>
@@ -45,6 +51,7 @@
       <a href="index.html#console">控制台</a>
       <a href="#overview">配置教程</a>
       <a href="changelog.html">更新日志</a>
+      <a href="architecture.html">架构</a>
       <a href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub ↗</a>
     </nav>
   </div>
@@ -344,12 +351,13 @@ docker compose --env-file .env.production \
         <a href="index.html#quickstart">快速开始</a>
         <a href="index.html#console">控制台</a>
         <a href="changelog.html">更新日志 ↗</a>
+        <a href="architecture.html">架构与流程 ↗</a>
       </div>
       <p class="footer__copy mono">APERTUREPRISM © <span id="year"></span> · 开源 · MIT License</p>
     </div>
   </footer>
 
-  <script src="assets/app.js?v=5"></script>
+  <script src="assets/app.js?v=13"></script>
   <script>
     /* guide 目录：滚动高亮当前小节（scrollspy） */
     (function () {
@@ -373,4 +381,7 @@ docker compose --env-file .env.production \
   </script>
 </body>
 </html>
+
+
+
 

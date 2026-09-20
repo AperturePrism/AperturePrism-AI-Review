@@ -82,10 +82,16 @@ const head = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>更新日志 — AperturePrism</title>
   <meta name="description" content="AperturePrism 版本更新日志：每个版本的更新内容与发布时间，来自 GitHub Releases。" />
+  <meta property="og:title" content="更新日志 — AperturePrism" />
+  <meta property="og:image" content="assets/og-image.jpg" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/favicon.png" />
   <link rel="preload" href="assets/fonts/cabinet-800.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist-mono.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="assets/style.css?v=5" />
+  <link rel="stylesheet" href="assets/style.css?v=13" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到正文</a>
@@ -102,6 +108,7 @@ const head = `<!DOCTYPE html>
         <a href="index.html#console">控制台</a>
         <a href="guide.html">配置教程</a>
         <a href="#timeline" class="active">更新日志</a>
+        <a href="architecture.html">架构</a>
       </nav>
       <div class="nav__actions">
         <a class="btn btn--ghost" href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub</a>
@@ -121,6 +128,7 @@ const head = `<!DOCTYPE html>
       <a href="index.html#console">控制台</a>
       <a href="guide.html">配置教程</a>
       <a href="#timeline">更新日志</a>
+      <a href="architecture.html">架构</a>
       <a href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub ↗</a>
     </nav>
   </div>
@@ -187,6 +195,7 @@ const foot = `      </div>
       </div>
       <div class="footer__links">
         <a href="guide.html">完整配置教程 ↗</a>
+        <a href="architecture.html">架构与流程 ↗</a>
         <a href="index.html#quickstart">快速开始</a>
         <a href="index.html#console">控制台</a>
       </div>
@@ -194,10 +203,13 @@ const foot = `      </div>
     </div>
   </footer>
 
-  <script src="assets/app.js?v=5"></script>
+  <script src="assets/app.js?v=13"></script>
 </body>
 </html>
 `;
 
 fs.writeFileSync(OUT, head + itemsHtml + foot, "utf8");
 console.error(`已生成 ${OUT}：${releases.length} 个版本，最新 ${releases[0].tag_name}`);
+
+
+

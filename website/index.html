@@ -8,10 +8,18 @@
   <meta property="og:title" content="AperturePrism — AI 代码审查平台" />
   <meta property="og:description" content="把 AI 代码审查做成一条可落地的产品链路，而不是单个模型调用。" />
   <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://review.aprism.top/" />
+  <meta property="og:image" content="assets/og-image.jpg" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="AperturePrism — AI 代码审查平台" />
+  <meta name="twitter:image" content="assets/og-image.jpg" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/favicon.png" />
   <link rel="preload" href="assets/fonts/cabinet-800.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist-mono.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="assets/style.css?v=5" />
+  <link rel="stylesheet" href="assets/style.css?v=13" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -31,6 +39,7 @@
         <a href="#quickstart">快速开始</a>
         <a href="guide.html">配置教程</a>
         <a href="changelog.html">更新日志</a>
+        <a href="architecture.html">架构</a>
       </nav>
 
       <div class="nav__actions">
@@ -53,6 +62,7 @@
       <a href="#quickstart">快速开始</a>
       <a href="guide.html">配置教程</a>
       <a href="changelog.html">更新日志</a>
+      <a href="architecture.html">架构</a>
       <a href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub ↗</a>
     </nav>
   </div>
@@ -106,7 +116,8 @@
           <span>TypeScript</span><i></i>
           <span>PostgreSQL + pgvector</span><i></i>
           <span>Redis</span><i></i>
-          <span>Docker</span>
+          <span>Docker</span><i></i>
+          <span>★ <span id="starCount">…</span></span>
         </div>
       </div>
     </section>
@@ -257,7 +268,7 @@
       <div class="container">
         <header class="section__head reveal">
           <h2 class="section__title">系统架构</h2>
-          <p class="section__desc">事件入口与 API 统一接入，任务被有韧性地调度到各 worker 并行执行。</p>
+          <p class="section__desc">事件入口与 API 统一接入，任务被有韧性地调度到各 worker 并行执行。<a href="architecture.html" class="ilink">查看交互式架构与流程图 ↗</a></p>
         </header>
 
         <div class="arch reveal">
@@ -434,6 +445,7 @@
       <div class="footer__links">
         <a href="guide.html">完整配置教程 ↗</a>
         <a href="changelog.html">更新日志 ↗</a>
+        <a href="architecture.html">架构与流程 ↗</a>
         <a href="#quickstart">快速开始</a>
         <a href="https://www.aprism.top" target="_blank" rel="noreferrer">aprism.top ↗</a>
         <a href="https://linux.do" target="_blank" rel="noreferrer">技术社区 · Linux.do ↗</a>
@@ -442,7 +454,10 @@
     </div>
   </footer>
 
-  <script src="assets/app.js?v=5"></script>
+  <script src="assets/app.js?v=13"></script>
 </body>
 </html>
+
+
+
 

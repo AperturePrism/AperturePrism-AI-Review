@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>架构与流程 — AperturePrism</title>
+  <meta name="description" content="AperturePrism 系统架构与核心流程：事件入口、任务引擎、数据层与多 worker 执行侧的系统地图。" />
+  <meta property="og:title" content="架构与流程 — AperturePrism" />
+  <meta property="og:image" content="assets/og-image.jpg" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/favicon.png" />
+  <link rel="preload" href="assets/fonts/cabinet-800.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="assets/fonts/geist.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="assets/fonts/geist-mono.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="assets/style.css?v=13" />
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header class="nav" id="nav">
+    <div class="container nav__inner">
+      <a class="brand" href="index.html" aria-label="AperturePrism 首页">
+        <img class="brand__mark" src="assets/logo.png" alt="AperturePrism" />
+      </a>
+      <nav class="nav__links" aria-label="主导航">
+        <a href="index.html">官网</a>
+        <a href="index.html#capabilities">核心能力</a>
+        <a href="index.html#console">控制台</a>
+        <a href="guide.html">配置教程</a>
+        <a href="changelog.html">更新日志</a>
+        <a href="#system" class="active">架构与流程</a>
+      </nav>
+      <div class="nav__actions">
+        <a class="btn btn--ghost" href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub</a>
+        <a class="btn btn--primary" href="index.html#quickstart">开始部署</a>
+        <button class="nav__toggle" id="navToggle" aria-label="打开菜单" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="drawer" id="drawer" aria-hidden="true">
+    <nav class="drawer__links" aria-label="移动端导航">
+      <a href="index.html">官网</a>
+      <a href="index.html#capabilities">核心能力</a>
+      <a href="index.html#console">控制台</a>
+      <a href="guide.html">配置教程</a>
+      <a href="changelog.html">更新日志</a>
+      <a href="#system">架构与流程</a>
+      <a href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub ↗</a>
+    </nav>
+  </div>
+
+  <main id="main">
+    <div class="guide-hero">
+      <div class="container">
+        <p class="hero__eyebrow mono">ARCHITECTURE · 架构与流程</p>
+        <h1 class="guide-hero__title">系统地图</h1>
+        <p class="guide-hero__sub">事件入口统一接入 API，任务引擎调度各 worker 并行执行，数据层支撑业务与事件。悬停节点与连线可查看关系。</p>
+      </div>
+    </div>
+
+    <div class="container arch-view" id="system">
+      <figure class="apx-block reveal">
+        <figcaption class="apx-cap">
+          <h2>系统架构</h2>
+          <p>GitHub Webhook / OAuth、QQ 机器人、WebUI 三类入口接入 apps/api；PostgreSQL（pgvector）与 Redis 构成数据层；五个 worker 承载分析与后台任务；模型网关与 GitHub 发布闭环。</p>
+        </figcaption>
+        <div class="apx-frame">
+          <svg class="apx-diagram" viewBox="0 0 1600 1060" role="img" aria-label="AperturePrism 系统架构图">
+            <defs>
+              <linearGradient id="apx-grad" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#5eead4"/>
+                <stop offset=".55" stop-color="#22d3ee"/>
+                <stop offset="1" stop-color="#818cf8"/>
+              </linearGradient>
+              <filter id="apx-glow" x="-40%" y="-40%" width="180%" height="180%">
+                <feGaussianBlur stdDeviation="4" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+
+            <!-- ============ 分组 ============ -->
+            <g class="apx-group" style="--step:0">
+              <rect class="bg" x="50" y="90" width="320" height="430" rx="18"/>
+              <text class="gt" x="68" y="114">接入层</text>
+            </g>
+            <g class="apx-group" style="--step:1">
+              <rect class="bg" x="900" y="90" width="320" height="430" rx="18"/>
+              <text class="gt" x="918" y="114">数据层</text>
+            </g>
+            <g class="apx-group" style="--step:2">
+              <rect class="bg bg--solid" x="1320" y="90" width="260" height="330" rx="18"/>
+              <text class="gt" x="1338" y="114">模型·发布</text>
+            </g>
+            <g class="apx-group" style="--step:3">
+              <rect class="bg" x="1320" y="430" width="260" height="600" rx="18"/>
+              <text class="gt" x="1338" y="454">任务执行</text>
+            </g>
+
+            <!-- ============ 连线 ============ -->
+            <g class="apx-edge" data-from="github" data-to="api" style="--step:0">
+              <path id="apxR1" class="flow" d="M335,174 H440 V374 H520"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.6s" repeatCount="indefinite" rotate="auto"><mpath href="#apxR1"/></animateMotion></circle>
+              <circle class="p" cx="520" cy="374" r="4"/>
+              <text class="el" x="348" y="160">Webhook / OAuth</text>
+            </g>
+            <g class="apx-edge" data-from="qq" data-to="api">
+              <path d="M335,304 H475 V352 H520"/>
+              <circle class="p" cx="520" cy="352" r="4"/>
+              <text class="el" x="348" y="294">触发任务</text>
+            </g>
+            <g class="apx-edge" data-from="webui" data-to="api">
+              <path d="M335,434 H440 V400 H520"/>
+              <circle class="p" cx="520" cy="400" r="4"/>
+              <text class="el" x="348" y="454">HTTP / SSE</text>
+            </g>
+            <g class="apx-edge" data-from="api" data-to="postgres" style="--step:1">
+              <path id="apxR2" class="flow" d="M810,336 H875 V174 H935"/>
+              <circle class="p" cx="935" cy="174" r="4"/>
+              <text class="el" x="884" y="262">读写数据</text>
+            </g>
+            <g class="apx-edge" data-from="api" data-to="redis">
+              <path d="M810,412 H875 V434 H935"/>
+              <circle class="p" cx="935" cy="434" r="4"/>
+              <text class="el" x="820" y="398">事件 / 租约</text>
+            </g>
+            <g class="apx-edge" data-from="postgres" data-to="analysis" style="--step:2">
+              <path id="apxR3" class="flow" d="M1185,168 H1265 V470 H1350"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.2s" repeatCount="indefinite" rotate="auto"><mpath href="#apxR3"/></animateMotion></circle>
+              <circle class="p" cx="1350" cy="470" r="4"/>
+              <text class="el" x="1280" y="462">领取任务</text>
+            </g>
+            <g class="apx-edge" data-from="postgres" data-to="index">
+              <path class="soft" d="M1185,180 H1265 V590 H1350"/>
+              <circle class="p" cx="1350" cy="590" r="4"/>
+              <text class="el" x="1280" y="582">读取 Issue</text>
+            </g>
+            <g class="apx-edge" data-from="postgres" data-to="scheduler">
+              <path class="soft" d="M1185,192 H1265 V710 H1350"/>
+              <circle class="p" cx="1350" cy="710" r="4"/>
+              <text class="el" x="1280" y="702">租约 / 记忆</text>
+            </g>
+            <g class="apx-edge" data-from="postgres" data-to="scan">
+              <path class="soft" d="M1185,204 H1265 V830 H1350"/>
+              <circle class="p" cx="1350" cy="830" r="4"/>
+              <text class="el" x="1280" y="822">仓库数据</text>
+            </g>
+            <g class="apx-edge" data-from="redis" data-to="qqbot">
+              <path class="soft" d="M1185,434 H1265 V950 H1350"/>
+              <circle class="p" cx="1350" cy="950" r="4"/>
+              <text class="el" x="1280" y="942">事件广播</text>
+            </g>
+            <g class="apx-edge" data-from="analysis" data-to="model" style="--step:3">
+              <path id="apxR4" class="flow" d="M1450,470 V378"/>
+              <circle class="p" cx="1450" cy="378" r="4"/>
+              <text class="el" x="1458" y="432">LLM 调用</text>
+            </g>
+            <g class="apx-edge" data-from="index" data-to="model">
+              <path class="soft" d="M1360,590 V560 H1332 V378"/>
+              <circle class="p" cx="1332" cy="378" r="4"/>
+              <text class="el" x="1300" y="556" text-anchor="end">Embedding</text>
+            </g>
+            <g class="apx-edge" data-from="analysis" data-to="publish">
+              <path d="M1550,470 H1583 V174 H1533"/>
+              <circle class="p" cx="1533" cy="174" r="4"/>
+              <text class="el" x="1576" y="300" text-anchor="end">幂等发布</text>
+            </g>
+
+            <!-- ============ 节点：接入层 ============ -->
+            <g class="apx-node" data-name="github" tabindex="0" style="--step:0">
+              <rect class="bg" x="85" y="140" width="250" height="68" rx="14"/>
+              <circle class="apx-dot external" cx="105" cy="174" r="5.5"/>
+              <text class="t" x="120" y="168" font-size="17">GitHub</text>
+              <text class="s" x="120" y="191" font-size="12.5">App · Webhook · OAuth</text>
+            </g>
+            <g class="apx-node" data-name="qq" tabindex="0" style="--step:1">
+              <rect class="bg" x="85" y="270" width="250" height="68" rx="14"/>
+              <circle class="apx-dot external" cx="105" cy="304" r="5.5"/>
+              <text class="t" x="120" y="298" font-size="17">QQ 机器人</text>
+              <text class="s" x="120" y="321" font-size="12.5">OneBot / Satori / 官方</text>
+            </g>
+            <g class="apx-node" data-name="webui" tabindex="0" style="--step:2">
+              <rect class="bg" x="85" y="400" width="250" height="68" rx="14"/>
+              <circle class="apx-dot frontend" cx="105" cy="434" r="5.5"/>
+              <text class="t" x="120" y="428" font-size="17">Web 控制台</text>
+              <text class="s" x="120" y="451" font-size="12.5">React + nginx</text>
+            </g>
+
+            <!-- ============ 节点：API ============ -->
+            <g class="apx-node" data-name="api" tabindex="0" style="--step:3">
+              <rect class="bg" x="520" y="330" width="290" height="88" rx="16"/>
+              <circle class="apx-dot backend" cx="540" cy="374" r="5.5"/>
+              <text class="t" x="555" y="370" font-size="18">apps/api</text>
+              <text class="s" x="555" y="394" font-size="13">Webhook · 认证 · 任务 · SSE · 配置</text>
+              <circle class="apx-live" cx="680" cy="374" r="8" fill="none" stroke="#5eead4" stroke-width="1.4"/>
+            </g>
+
+            <!-- ============ 节点：数据层 ============ -->
+            <g class="apx-node" data-name="postgres" tabindex="0" style="--step:4">
+              <rect class="bg" x="935" y="140" width="250" height="68" rx="14"/>
+              <circle class="apx-dot database" cx="955" cy="174" r="5.5"/>
+              <text class="t" x="970" y="168" font-size="17">PostgreSQL</text>
+              <text class="s" x="970" y="191" font-size="12.5">pgvector · 任务 / 结果 / 向量</text>
+            </g>
+            <g class="apx-node" data-name="redis" tabindex="0" style="--step:5">
+              <rect class="bg" x="935" y="400" width="250" height="68" rx="14"/>
+              <circle class="apx-dot database" cx="955" cy="434" r="5.5"/>
+              <text class="t" x="970" y="428" font-size="17">Redis</text>
+              <text class="s" x="970" y="451" font-size="12.5">SSE 广播 · 租约 · 队列</text>
+            </g>
+
+            <!-- ============ 节点：模型与发布 ============ -->
+            <g class="apx-node" data-name="publish" tabindex="0" style="--step:6">
+              <rect class="bg" x="1330" y="140" width="200" height="68" rx="14"/>
+              <circle class="apx-dot external" cx="1350" cy="174" r="5.5"/>
+              <text class="t" x="1365" y="168" font-size="15">GitHub 发布</text>
+              <text class="s" x="1365" y="191" font-size="11.5">Review · 标签</text>
+            </g>
+            <g class="apx-node" data-name="model" tabindex="0" style="--step:7">
+              <rect class="bg" x="1330" y="330" width="200" height="68" rx="14"/>
+              <circle class="apx-dot cloud" cx="1350" cy="364" r="5.5"/>
+              <text class="t" x="1365" y="358" font-size="15">模型网关</text>
+              <text class="s" x="1365" y="381" font-size="11.5">OpenAI 兼容</text>
+            </g>
+
+            <!-- ============ 节点：任务执行 ============ -->
+            <g class="apx-node" data-name="analysis" tabindex="0" style="--step:8">
+              <rect class="bg" x="1350" y="470" width="200" height="68" rx="14"/>
+              <circle class="apx-dot backend" cx="1370" cy="504" r="5.5"/>
+              <text class="t" x="1385" y="498" font-size="15">analysis-worker</text>
+              <text class="s" x="1385" y="521" font-size="11.5">Issue / PR 分析 · 专家团队</text>
+            </g>
+            <g class="apx-node" data-name="index" tabindex="0" style="--step:9">
+              <rect class="bg" x="1350" y="590" width="200" height="68" rx="14"/>
+              <circle class="apx-dot backend" cx="1370" cy="624" r="5.5"/>
+              <text class="t" x="1385" y="618" font-size="15">index-worker</text>
+              <text class="s" x="1385" y="641" font-size="11.5">索引 + RAG 向量化</text>
+            </g>
+            <g class="apx-node" data-name="scheduler" tabindex="0" style="--step:10">
+              <rect class="bg" x="1350" y="710" width="200" height="68" rx="14"/>
+              <circle class="apx-dot backend" cx="1370" cy="744" r="5.5"/>
+              <text class="t" x="1385" y="738" font-size="15">scheduler</text>
+              <text class="s" x="1385" y="761" font-size="11.5">租约 · 重试 · 记忆合并</text>
+            </g>
+            <g class="apx-node" data-name="scan" tabindex="0" style="--step:11">
+              <rect class="bg" x="1350" y="830" width="200" height="68" rx="14"/>
+              <circle class="apx-dot backend" cx="1370" cy="864" r="5.5"/>
+              <text class="t" x="1385" y="858" font-size="15">scan-worker</text>
+              <text class="s" x="1385" y="881" font-size="11.5">仓库定期扫描</text>
+            </g>
+            <g class="apx-node" data-name="qqbot" tabindex="0" style="--step:12">
+              <rect class="bg" x="1350" y="950" width="200" height="68" rx="14"/>
+              <circle class="apx-dot bus" cx="1370" cy="984" r="5.5"/>
+              <text class="t" x="1385" y="978" font-size="15">qq-bot</text>
+              <text class="s" x="1385" y="1001" font-size="11.5">QQ 渠道适配</text>
+            </g>
+          </svg>
+        </div>
+      </figure>
+
+      <!-- ============ 图 2：Issue / PR 处理链路 ============ -->
+      <figure class="apx-block reveal">
+        <figcaption class="apx-cap">
+          <h2>处理链路</h2>
+          <p>事件从入口进入 apps/api：校验并创建分析任务，PostgreSQL 落库、Redis 广播；analysis-worker 领取租约后检索上下文并调用模型，最终幂等发布到 GitHub。</p>
+        </figcaption>
+        <div class="apx-frame">
+          <svg class="apx-diagram" data-title="处理链路" viewBox="0 0 1600 620" role="img" aria-label="AperturePrism Issue 与 PR 处理链路图">
+            <defs>
+              <linearGradient id="apx-grad-2" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#5eead4"/>
+                <stop offset=".55" stop-color="#22d3ee"/>
+                <stop offset="1" stop-color="#818cf8"/>
+              </linearGradient>
+            </defs>
+
+            <!-- 分组 -->
+            <g class="apx-group" style="--step:0">
+              <rect class="bg" x="40" y="90" width="300" height="430" rx="18"/>
+              <text class="gt" x="58" y="114">接入 · 事件</text>
+            </g>
+            <g class="apx-group" style="--step:1">
+              <rect class="bg" x="420" y="90" width="260" height="430" rx="18"/>
+              <text class="gt" x="438" y="114">编排 · 任务</text>
+            </g>
+            <g class="apx-group" style="--step:2">
+              <rect class="bg" x="760" y="90" width="260" height="430" rx="18"/>
+              <text class="gt" x="778" y="114">数据层</text>
+            </g>
+            <g class="apx-group" style="--step:3">
+              <rect class="bg bg--solid" x="1100" y="90" width="460" height="430" rx="18"/>
+              <text class="gt" x="1118" y="114">执行 · AI · 发布</text>
+            </g>
+
+            <!-- 连线 -->
+            <g class="apx-edge" data-from="github" data-to="api" style="--step:0">
+              <path id="wfL1" class="flow" d="M340,184 H420" style="stroke:url(#apx-grad-2)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.6s" repeatCount="indefinite" rotate="auto"><mpath href="#wfL1"/></animateMotion></circle>
+              <circle class="p" cx="420" cy="184" r="4"/>
+              <text class="el" x="352" y="172">Webhook / OAuth</text>
+            </g>
+            <g class="apx-edge" data-from="qq" data-to="api">
+              <path class="soft" d="M340,324 H405 V230 H420"/>
+              <circle class="p" cx="420" cy="230" r="4"/>
+              <text class="el" x="352" y="316">触发任务</text>
+            </g>
+            <g class="apx-edge" data-from="webui" data-to="api">
+              <path class="soft" d="M340,470 H375 V268 H420"/>
+              <circle class="p" cx="420" cy="268" r="4"/>
+              <text class="el" x="352" y="498">HTTP / SSE</text>
+            </g>
+            <g class="apx-edge" data-from="api" data-to="pg" style="--step:1">
+              <path id="wfL2" class="flow" d="M680,200 H760" style="stroke:url(#apx-grad-2)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.4s" repeatCount="indefinite" rotate="auto"><mpath href="#wfL2"/></animateMotion></circle>
+              <circle class="p" cx="760" cy="200" r="4"/>
+              <text class="el" x="692" y="170">任务落库 · draft → scheduled</text>
+            </g>
+            <g class="apx-edge" data-from="api" data-to="redis">
+              <path class="soft" d="M680,280 H720 V364 H760"/>
+              <circle class="p" cx="760" cy="364" r="4"/>
+              <text class="el" x="686" y="308">SSE 广播 · 排队</text>
+            </g>
+            <g class="apx-edge" data-from="pg" data-to="analysis" style="--step:2">
+              <path id="wfL3" class="flow" d="M1020,184 H1100" style="stroke:url(#apx-grad-2)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.2s" repeatCount="indefinite" rotate="auto"><mpath href="#wfL3"/></animateMotion></circle>
+              <circle class="p" cx="1100" cy="184" r="4"/>
+              <text class="el" x="1032" y="172">领取任务 · 租约</text>
+            </g>
+            <g class="apx-edge" data-from="redis" data-to="analysis">
+              <path class="soft" d="M1020,364 H1050 V230 H1100"/>
+              <circle class="p" cx="1100" cy="230" r="4"/>
+              <text class="el" x="1026" y="300">事件通知</text>
+            </g>
+            <g class="apx-edge" data-from="analysis" data-to="model" style="--step:3">
+              <path id="wfL4" class="flow" d="M1200,238 V290" style="stroke:url(#apx-grad-2)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.2s" repeatCount="indefinite" rotate="auto"><mpath href="#wfL4"/></animateMotion></circle>
+              <circle class="p" cx="1200" cy="290" r="4"/>
+              <text class="el" x="1210" y="258">LLM 分析</text>
+            </g>
+            <g class="apx-edge" data-from="model" data-to="analysis">
+              <path class="soft" d="M1120,358 V230 H1100"/>
+              <circle class="p" cx="1100" cy="230" r="4"/>
+              <text class="el" x="1128" y="330">结构化结果</text>
+            </g>
+            <g class="apx-edge" data-from="analysis" data-to="publish">
+              <path class="soft" d="M1300,248 H1340 V436 H1100"/>
+              <circle class="p" cx="1100" cy="436" r="4"/>
+              <text class="el" x="1215" y="420" text-anchor="end">幂等发布</text>
+            </g>
+
+            <!-- 节点 -->
+            <g class="apx-node" data-name="github" tabindex="0" style="--step:0">
+              <rect class="bg" x="70" y="150" width="270" height="68" rx="14"/>
+              <circle class="apx-dot external" cx="90" cy="184" r="5.5"/>
+              <text class="t" x="105" y="178" font-size="16">GitHub</text>
+              <text class="s" x="105" y="201" font-size="12.5">App · Webhook · OAuth</text>
+            </g>
+            <g class="apx-node" data-name="qq" tabindex="0" style="--step:1">
+              <rect class="bg" x="70" y="290" width="270" height="68" rx="14"/>
+              <circle class="apx-dot external" cx="90" cy="324" r="5.5"/>
+              <text class="t" x="105" y="318" font-size="16">QQ 机器人</text>
+              <text class="s" x="105" y="341" font-size="12.5">OneBot / Satori</text>
+            </g>
+            <g class="apx-node" data-name="webui" tabindex="0" style="--step:2">
+              <rect class="bg" x="70" y="436" width="270" height="68" rx="14"/>
+              <circle class="apx-dot frontend" cx="90" cy="470" r="5.5"/>
+              <text class="t" x="105" y="464" font-size="16">Web 控制台</text>
+              <text class="s" x="105" y="487" font-size="12.5">配置 · 手动触发</text>
+            </g>
+            <g class="apx-node" data-name="api" tabindex="0" style="--step:3">
+              <rect class="bg" x="420" y="150" width="260" height="88" rx="16"/>
+              <circle class="apx-dot backend" cx="440" cy="194" r="5.5"/>
+              <text class="t" x="455" y="190" font-size="17">apps/api</text>
+              <text class="s" x="455" y="214" font-size="12.5">验签 · 认证 · 建任务</text>
+              <circle class="apx-live" cx="580" cy="194" r="8" fill="none" stroke="#5eead4" stroke-width="1.4"/>
+            </g>
+            <g class="apx-node" data-name="pg" tabindex="0" style="--step:4">
+              <rect class="bg" x="760" y="150" width="260" height="68" rx="14"/>
+              <circle class="apx-dot database" cx="780" cy="184" r="5.5"/>
+              <text class="t" x="795" y="178" font-size="16">PostgreSQL</text>
+              <text class="s" x="795" y="201" font-size="12.5">任务表 · 状态机</text>
+            </g>
+            <g class="apx-node" data-name="redis" tabindex="0" style="--step:5">
+              <rect class="bg" x="760" y="330" width="260" height="68" rx="14"/>
+              <circle class="apx-dot database" cx="780" cy="364" r="5.5"/>
+              <text class="t" x="795" y="358" font-size="16">Redis</text>
+              <text class="s" x="795" y="381" font-size="12.5">SSE 广播 · 队列</text>
+            </g>
+            <g class="apx-node" data-name="analysis" tabindex="0" style="--step:6">
+              <rect class="bg" x="1100" y="150" width="200" height="88" rx="16"/>
+              <circle class="apx-dot backend" cx="1120" cy="194" r="5.5"/>
+              <text class="t" x="1135" y="190" font-size="16">analysis-worker</text>
+              <text class="s" x="1135" y="214" font-size="12.5">上下文检索 · 专家分析</text>
+            </g>
+            <g class="apx-node" data-name="model" tabindex="0" style="--step:7">
+              <rect class="bg" x="1100" y="290" width="200" height="68" rx="14"/>
+              <circle class="apx-dot cloud" cx="1120" cy="324" r="5.5"/>
+              <text class="t" x="1135" y="318" font-size="15">模型网关</text>
+              <text class="s" x="1135" y="341" font-size="11.5">文本 / 视觉模型</text>
+            </g>
+            <g class="apx-node" data-name="publish" tabindex="0" style="--step:8">
+              <rect class="bg" x="1100" y="436" width="200" height="68" rx="14"/>
+              <circle class="apx-dot external" cx="1120" cy="470" r="5.5"/>
+              <text class="t" x="1135" y="464" font-size="15">GitHub 发布</text>
+              <text class="s" x="1135" y="487" font-size="11.5">评论 · 标签 · 幂等</text>
+            </g>
+          </svg>
+        </div>
+      </figure>
+
+      <!-- ============ 图 3：PR 审查时序 ============ -->
+      <figure class="apx-block reveal">
+        <figcaption class="apx-cap">
+          <h2>PR 审查时序</h2>
+          <p>以一条 PR 为例：Webhook 验签→任务入队→worker 通过租约接管→模型分析→结果拉取与幂等发布，全程经 SSE 反馈进度。</p>
+        </figcaption>
+        <div class="apx-frame">
+          <svg class="apx-diagram" data-title="PR审查时序" viewBox="0 0 1600 740" role="img" aria-label="AperturePrism PR 审查时序图">
+            <defs>
+              <linearGradient id="apx-grad-3" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#5eead4"/>
+                <stop offset=".55" stop-color="#22d3ee"/>
+                <stop offset="1" stop-color="#818cf8"/>
+              </linearGradient>
+            </defs>
+
+            <!-- 泳道竖线 -->
+            <g class="apx-lane">
+              <path d="M150,124 V700"/><path d="M450,124 V700"/><path d="M750,124 V700"/><path d="M1050,124 V700"/><path d="M1350,124 V700"/>
+            </g>
+
+            <!-- 顶部参与者 -->
+            <g class="apx-node" data-name="lane-gh" tabindex="0" style="--step:0">
+              <rect class="bg" x="90" y="60" width="120" height="56" rx="12"/>
+              <text class="t" x="150" y="87" font-size="14" text-anchor="middle">GitHub</text>
+            </g>
+            <g class="apx-node" data-name="lane-api" tabindex="0" style="--step:1">
+              <rect class="bg" x="390" y="60" width="120" height="56" rx="12"/>
+              <text class="t" x="450" y="87" font-size="14" text-anchor="middle">apps/api</text>
+            </g>
+            <g class="apx-node" data-name="lane-redis" tabindex="0" style="--step:2">
+              <rect class="bg" x="690" y="60" width="120" height="56" rx="12"/>
+              <text class="t" x="750" y="87" font-size="14" text-anchor="middle">Redis / 队列</text>
+            </g>
+            <g class="apx-node" data-name="lane-worker" tabindex="0" style="--step:3">
+              <rect class="bg" x="990" y="60" width="120" height="56" rx="12"/>
+              <text class="t" x="1050" y="87" font-size="14" text-anchor="middle">analysis</text>
+            </g>
+            <g class="apx-node" data-name="lane-model" tabindex="0" style="--step:4">
+              <rect class="bg" x="1290" y="60" width="120" height="56" rx="12"/>
+              <text class="t" x="1350" y="87" font-size="14" text-anchor="middle">模型网关</text>
+            </g>
+
+            <!-- 消息 -->
+            <g class="apx-edge" data-from="lane-gh" data-to="lane-api" style="--step:0">
+              <path id="sqL1" class="flow" d="M210,170 H330" style="stroke:url(#apx-grad-3)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.6s" repeatCount="indefinite" rotate="auto"><mpath href="#sqL1"/></animateMotion></circle>
+              <circle class="p" cx="330" cy="170" r="4"/>
+              <text class="el" x="270" y="156" text-anchor="middle">01 PR opened</text>
+            </g>
+            <g class="apx-edge" data-from="lane-api" data-to="lane-redis" style="--step:1">
+              <path id="sqL2" class="flow" d="M540,260 H660" style="stroke:url(#apx-grad-3)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.4s" repeatCount="indefinite" rotate="auto"><mpath href="#sqL2"/></animateMotion></circle>
+              <circle class="p" cx="660" cy="260" r="4"/>
+              <text class="el" x="600" y="246" text-anchor="middle">02 验签 · 任务入队</text>
+            </g>
+            <g class="apx-edge" data-from="lane-redis" data-to="lane-worker" style="--step:2">
+              <path id="sqL3" class="flow" d="M870,350 H990" style="stroke:url(#apx-grad-3)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.2s" repeatCount="indefinite" rotate="auto"><mpath href="#sqL3"/></animateMotion></circle>
+              <circle class="p" cx="990" cy="350" r="4"/>
+              <text class="el" x="930" y="336" text-anchor="middle">03 领取任务 · 租约</text>
+            </g>
+            <g class="apx-edge" data-from="lane-worker" data-to="lane-model">
+              <path class="soft" d="M1170,440 H1290"/>
+              <circle class="p" cx="1290" cy="440" r="4"/>
+              <text class="el" x="1230" y="426" text-anchor="middle">04 模型分析</text>
+            </g>
+            <g class="apx-edge" data-from="lane-model" data-to="lane-worker">
+              <path class="soft" d="M1290,510 H1170"/>
+              <circle class="p" cx="1170" cy="510" r="4"/>
+              <text class="el" x="1230" y="496" text-anchor="middle">05 结构化结果</text>
+            </g>
+            <g class="apx-edge" data-from="lane-worker" data-to="lane-api">
+              <path class="soft" d="M990,580 H540"/>
+              <circle class="p" cx="540" cy="580" r="4"/>
+              <text class="el" x="775" y="566" text-anchor="middle">06 更新状态 · completed</text>
+            </g>
+            <g class="apx-edge" data-from="lane-api" data-to="lane-gh" style="--step:3">
+              <path id="sqL4" class="flow" d="M450,650 H210" style="stroke:url(#apx-grad-3)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.8s" repeatCount="indefinite" rotate="auto"><mpath href="#sqL4"/></animateMotion></circle>
+              <circle class="p" cx="210" cy="650" r="4"/>
+              <text class="el" x="330" y="636" text-anchor="middle">07 幂等发布 · 评论 / 标签</text>
+            </g>
+          </svg>
+        </div>
+      </figure>
+
+      <!-- ============ 图 4：任务生命周期 ============ -->
+      <figure class="apx-block reveal">
+        <figcaption class="apx-cap">
+          <h2>任务生命周期</h2>
+          <p>任务从 draft 入队到 scheduled、running、completed；异常进入 failed 并退避重试，租约过期自动回到调度队列，重复投递由幂等键保证。</p>
+        </figcaption>
+        <div class="apx-frame">
+          <svg class="apx-diagram" data-title="任务生命周期" viewBox="0 0 1600 620" role="img" aria-label="AperturePrism 任务生命周期状态机">
+            <defs>
+              <linearGradient id="apx-grad-4" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#5eead4"/>
+                <stop offset=".55" stop-color="#22d3ee"/>
+                <stop offset="1" stop-color="#818cf8"/>
+              </linearGradient>
+            </defs>
+
+            <!-- 分组 -->
+            <g class="apx-group" style="--step:0">
+              <rect class="bg" x="40" y="80" width="1520" height="480" rx="18"/>
+              <text class="gt" x="58" y="104">状态机</text>
+            </g>
+
+            <!-- 连线 -->
+            <g class="apx-edge" data-from="draft" data-to="scheduled" style="--step:0">
+              <path id="lcL1" class="flow" d="M250,214 H340" style="stroke:url(#apx-grad-4)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.6s" repeatCount="indefinite" rotate="auto"><mpath href="#lcL1"/></animateMotion></circle>
+              <circle class="p" cx="340" cy="214" r="4"/>
+              <text class="el" x="295" y="200" text-anchor="middle">创建任务</text>
+            </g>
+            <g class="apx-edge" data-from="scheduled" data-to="running" style="--step:1">
+              <path id="lcL2" class="flow" d="M560,214 H660" style="stroke:url(#apx-grad-4)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.4s" repeatCount="indefinite" rotate="auto"><mpath href="#lcL2"/></animateMotion></circle>
+              <circle class="p" cx="660" cy="214" r="4"/>
+              <text class="el" x="610" y="200" text-anchor="middle">领取 · 租约</text>
+            </g>
+            <g class="apx-edge" data-from="running" data-to="completed" style="--step:2">
+              <path id="lcL3" class="flow" d="M880,214 H1000" style="stroke:url(#apx-grad-4)"/>
+<circle class="apx-token" r="3" fill="#7ce7f8" cx="0" cy="0"><animateMotion dur="2.2s" repeatCount="indefinite" rotate="auto"><mpath href="#lcL3"/></animateMotion></circle>
+              <circle class="p" cx="1000" cy="214" r="4"/>
+              <text class="el" x="940" y="200" text-anchor="middle">分析完成</text>
+            </g>
+            <g class="apx-edge" data-from="running" data-to="failed">
+              <path class="soft" d="M770,238 V360"/>
+              <circle class="p" cx="770" cy="360" r="4"/>
+              <text class="el" x="780" y="300">异常 · 失败</text>
+            </g>
+            <g class="apx-edge" data-from="failed" data-to="scheduled">
+              <path class="soft" d="M700,398 H430 V238"/>
+              <circle class="p" cx="430" cy="238" r="4"/>
+              <text class="el" x="565" y="352" text-anchor="middle">退避重试</text>
+            </g>
+            <g class="apx-edge" data-from="running" data-to="scheduled">
+              <path class="soft" d="M720,190 C720,120 470,120 470,190"/>
+              <text class="el" x="595" y="134" text-anchor="middle">租约过期 → 重新调度</text>
+            </g>
+
+            <!-- 节点 -->
+            <g class="apx-node" data-name="draft" tabindex="0" style="--step:0">
+              <rect class="bg" x="100" y="180" width="150" height="68" rx="14"/>
+              <circle class="apx-dot backend" cx="120" cy="214" r="5.5"/>
+              <text class="t" x="135" y="208" font-size="16">draft</text>
+              <text class="s" x="135" y="231" font-size="11.5">新建 · 待调度</text>
+            </g>
+            <g class="apx-node" data-name="scheduled" tabindex="0" style="--step:1">
+              <rect class="bg" x="340" y="180" width="220" height="68" rx="14"/>
+              <circle class="apx-dot backend" cx="360" cy="214" r="5.5"/>
+              <text class="t" x="375" y="208" font-size="16">scheduled</text>
+              <text class="s" x="375" y="231" font-size="11.5">已入队 · 等待领取</text>
+            </g>
+            <g class="apx-node" data-name="running" tabindex="0" style="--step:2">
+              <rect class="bg" x="660" y="180" width="220" height="68" rx="14"/>
+              <circle class="apx-dot backend" cx="680" cy="214" r="5.5"/>
+              <text class="t" x="695" y="208" font-size="16">running</text>
+              <text class="s" x="695" y="231" font-size="11.5">执行中 · 持有租约</text>
+            </g>
+            <g class="apx-node" data-name="completed" tabindex="0" style="--step:3">
+              <rect class="bg" x="1000" y="180" width="220" height="68" rx="14"/>
+              <circle class="apx-dot backend" cx="1020" cy="214" r="5.5"/>
+              <text class="t" x="1035" y="208" font-size="16">completed</text>
+              <text class="s" x="1035" y="231" font-size="11.5">结果已落库 · 幂等</text>
+            </g>
+            <g class="apx-node" data-name="failed" tabindex="0" style="--step:4">
+              <rect class="bg" x="660" y="326" width="220" height="68" rx="14"/>
+              <circle class="apx-dot external" cx="680" cy="360" r="5.5"/>
+              <text class="t" x="695" y="354" font-size="16">failed</text>
+              <text class="s" x="695" y="377" font-size="11.5">重试上限 → 告警</text>
+            </g>
+            <g class="apx-node" data-name="completed-dup" tabindex="0" style="--step:5">
+              <rect class="bg" x="1000" y="326" width="220" height="68" rx="14"/>
+              <circle class="apx-dot frontend" cx="1020" cy="360" r="5.5"/>
+              <text class="t" x="1035" y="354" font-size="16">去重</text>
+              <text class="s" x="1035" y="377" font-size="11.5">幂等键 · 防重复</text>
+            </g>
+          </svg>
+        </div>
+      </figure>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer__inner">
+      <div class="footer__brand">
+        <img class="footer__mark" src="assets/logo.png" alt="AperturePrism" />
+        <p>把 AI 代码审查做成一条可落地的产品链路。</p>
+      </div>
+      <div class="footer__links">
+        <a href="index.html">官网</a>
+        <a href="index.html#capabilities">核心能力</a>
+        <a href="index.html#console">控制台</a>
+        <a href="#system">架构与流程</a>
+      </div>
+      <div class="footer__links">
+        <a href="guide.html">完整配置教程 ↗</a>
+        <a href="changelog.html">更新日志 ↗</a>
+        <a href="index.html#quickstart">快速开始</a>
+      </div>
+      <p class="footer__copy mono">APERTUREPRISM © <span id="year"></span> · 开源 · MIT License</p>
+    </div>
+  </footer>
+
+  <!-- 全屏查看层（通用，由查看器 JS 注入当前图） -->
+  <div class="apx-overlay" id="archOverlay" role="dialog" aria-modal="true" aria-label="架构图全屏查看">
+    <div class="apx-overlay-topbar">
+      <div class="apx-overlay-title"><span class="dot" aria-hidden="true"></span><span id="archOverlayTitle">系统架构</span> · AperturePrism</div>
+      <div class="apx-overlay-tools" role="toolbar" aria-label="全屏查看器">
+        <button class="apx-tbtn" type="button" data-act="zoom-out" aria-label="缩小" title="缩小">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+        <span class="apx-zoom" data-zoom-label aria-live="polite">100%</span>
+        <button class="apx-tbtn" type="button" data-act="zoom-in" aria-label="放大" title="放大">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+        <span class="apx-tsep" aria-hidden="true"></span>
+        <button class="apx-tbtn" type="button" data-act="fit" aria-label="适应窗口" title="适应窗口">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3H3v3.5M9.5 13H13V9.5M13 6.5V3H9.5M3 9.5V13h3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="apx-tbtn" type="button" data-act="actual" aria-label="实际大小 1:1" title="实际大小 (1:1)">
+          <span style="font-size:10.5px;font-weight:600;font-family:var(--font-mono)">1:1</span>
+        </button>
+        <span class="apx-tsep" aria-hidden="true"></span>
+        <button class="apx-tbtn" type="button" data-act="export" aria-label="导出 PNG" title="导出 PNG">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5V10M5 7l3 3 3-3M3 13h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <button class="apx-tbtn apx-tbtn--close" type="button" data-act="close" aria-label="关闭" title="关闭 (Esc)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="apx-overlay-stage" id="archStage"></div>
+    <p class="apx-overlay-hint">滚轮缩放 · 拖拽平移 · 双击复位 · Esc 关闭</p>
+  </div>
+
+  <script src="assets/app.js?v=13"></script>
+  <script>
+    /* AperturePrism 架构图交互：点击节点聚焦（高亮本体+关联连线，其余淡出） */
+    (function () {
+      var diagrams = document.querySelectorAll(".apx-diagram");
+      diagrams.forEach(function (diag) {
+        var nodes = diag.querySelectorAll(".apx-node");
+        var edges = diag.querySelectorAll(".apx-edge");
+        function clear() {
+          diag.classList.remove("apx-focus-on");
+          nodes.forEach(function (g) { g.classList.remove("is-focused"); });
+          edges.forEach(function (g) { g.classList.remove("is-related"); });
+        }
+        nodes.forEach(function (g) {
+          function focus() {
+            if (g.classList.contains("is-focused")) { clear(); return; }
+            clear();
+            g.classList.add("is-focused");
+            var id = g.getAttribute("data-name") || "";
+            edges.forEach(function (e) {
+              var from = e.getAttribute("data-from");
+              var to = e.getAttribute("data-to");
+              if (from === id || to === id) e.classList.add("is-related");
+            });
+            diag.classList.add("apx-focus-on");
+          }
+          g.addEventListener("click", function (ev) { ev.stopPropagation(); focus(); });
+          g.addEventListener("keydown", function (ev) {
+            if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); focus(); }
+          });
+        });
+        diag.addEventListener("click", clear); // 点空白恢复
+      });
+    })();
+
+    /* AperturePrism 架构图进阶交互：hover 关系联动 + 信息 tooltip */
+    (function () {
+      function nodeName(g) {
+        var t = g.querySelector(".t");
+        return t ? t.textContent : (g.getAttribute("data-name") || "");
+      }
+      function nodeDesc(g) {
+        var s = g.querySelector(".s");
+        return s ? s.textContent : "";
+      }
+      function relOf(g, edges) {
+        var id = g.getAttribute("data-name") || "";
+        var rels = [];
+        edges.forEach(function (e) {
+          var from = e.getAttribute("data-from");
+          var to = e.getAttribute("data-to");
+          var el = e.querySelector(".el");
+          if (from === id || to === id) {
+            var peer = from === id ? to : from;
+            rels.push({ peer: peer, label: el ? el.textContent.trim() : "" });
+          }
+        });
+        return rels;
+      }
+
+      var tip = document.createElement("div");
+      tip.className = "apx-tip";
+      tip.innerHTML = '<div class="apx-tip__t"><span class="dot"></span><span class="apx-tip__name"></span></div>' +
+        '<div class="apx-tip__d"></div>' +
+        '<div class="apx-tip__k">RELATIONS</div><div class="apx-tip__rels"></div>';
+      document.body.appendChild(tip);
+      var tipName = tip.querySelector(".apx-tip__name");
+      var tipDesc = tip.querySelector(".apx-tip__d");
+      var tipRels = tip.querySelector(".apx-tip__rels");
+      var tipTimer = null, lastNode = null;
+
+      function hideTip() {
+        tip.classList.remove("show");
+      }
+      function scheduleHide() {
+        if (tipTimer) clearTimeout(tipTimer);
+        tipTimer = setTimeout(hideTip, 60);
+      }
+      function showTipFor(g, edges, cx, cy) {
+        tipName.textContent = nodeName(g);
+        tipDesc.textContent = nodeDesc(g);
+        tipRels.innerHTML = "";
+        relOf(g, edges).forEach(function (r) {
+          var span = document.createElement("span");
+          span.className = "apx-tip__rel";
+          span.textContent = (r.label ? r.label + " → " : "") + r.peer;
+          tipRels.appendChild(span);
+        });
+        tip.classList.add("show");
+        positionTip(cx, cy);
+      }
+      function positionTip(cx, cy) {
+        var pad = 14;
+        var rect = tip.getBoundingClientRect();
+        var x = cx + pad, y = cy + pad + 6;
+        if (x + rect.width > window.innerWidth - 10) x = cx - rect.width - pad;
+        if (y + rect.height > window.innerHeight - 10) y = cy - rect.height - pad - 6;
+        tip.style.left = x + "px";
+        tip.style.top = y + "px";
+      }
+
+      document.querySelectorAll(".apx-diagram").forEach(function (diag) {
+        var nodes = diag.querySelectorAll(".apx-node");
+        var edges = diag.querySelectorAll(".apx-edge");
+
+        function clearHover() {
+          diag.classList.remove("apx-hover-on");
+          nodes.forEach(function (g) {
+            g.classList.remove("is-hvr");
+            g.classList.remove("is-hvr-peer");
+          });
+          edges.forEach(function (e) { e.classList.remove("is-hvr"); });
+        }
+
+        nodes.forEach(function (g) {
+          g.addEventListener("mouseenter", function (ev) {
+            if (diag.classList.contains("apx-focus-on")) return; // 聚焦态不叠加 hover 淡化
+            if (tipTimer) clearTimeout(tipTimer);
+            clearHover();
+            var id = g.getAttribute("data-name") || "";
+            g.classList.add("is-hvr");
+            edges.forEach(function (e) {
+              var from = e.getAttribute("data-from");
+              var to = e.getAttribute("data-to");
+              if (from === id || to === id) {
+                e.classList.add("is-hvr");
+                var peerKey = from === id ? to : from;
+                nodes.forEach(function (n) {
+                  if (n.getAttribute("data-name") === peerKey) n.classList.add("is-hvr-peer");
+                });
+              }
+            });
+            diag.classList.add("apx-hover-on");
+            showTipFor(g, edges, ev.clientX, ev.clientY);
+          });
+          g.addEventListener("mousemove", function (ev) { positionTip(ev.clientX, ev.clientY); });
+          g.addEventListener("mouseleave", function () {
+            scheduleHide();
+            clearHover();
+          });
+        });
+
+        /* tooltip 也跟随连线 */
+        edges.forEach(function (e) {
+          e.addEventListener("mousemove", function (ev) {
+            if (ev.target.closest && ev.target.closest("path")) {
+              positionTip(ev.clientX, ev.clientY);
+            }
+          });
+        });
+      });
+
+      /* 拖拽平移时隐藏 tooltip，避免跟随卡顿 */
+      document.addEventListener("mousedown", function () { hideTip(); }, true);
+    })();
+
+    /* AperturePrism 架构图查看器：支持页内多图；滚轮/按钮缩放、拖拽平移、适应窗口、1:1、导出 PNG、全屏 */
+    (function () {
+      var overlay = document.getElementById("archOverlay");
+      var stage = document.getElementById("archStage");
+      var titleEl = document.getElementById("archOverlayTitle");
+      var openCtx = null; // 当前全屏的图上下文
+      var TOOLBAR_TPL =
+        '<div class="apx-toolbar" role="toolbar" aria-label="架构图查看器">' +
+        '<button class="apx-tbtn" type="button" data-act="zoom-out" aria-label="缩小" title="缩小">' +
+        '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>' +
+        '<span class="apx-zoom" data-zoom-label aria-live="polite">100%</span>' +
+        '<button class="apx-tbtn" type="button" data-act="zoom-in" aria-label="放大" title="放大">' +
+        '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>' +
+        '<span class="apx-tsep" aria-hidden="true"></span>' +
+        '<button class="apx-tbtn" type="button" data-act="fit" aria-label="适应窗口" title="适应窗口">' +
+        '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3H3v3.5M9.5 13H13V9.5M13 6.5V3H9.5M3 9.5V13h3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
+        '<button class="apx-tbtn" type="button" data-act="actual" aria-label="实际大小 1:1" title="实际大小 (1:1)">' +
+        '<span style="font-size:10.5px;font-weight:600;font-family:var(--font-mono)">1:1</span></button>' +
+        '<span class="apx-tsep" aria-hidden="true"></span>' +
+        '<button class="apx-tbtn" type="button" data-act="export" aria-label="导出 PNG" title="导出 PNG">' +
+        '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5V10M5 7l3 3 3-3M3 13h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
+        '<button class="apx-tbtn" type="button" data-act="fullscreen" aria-label="全屏查看" title="全屏查看">' +
+        '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
+        '</div>';
+
+      function closeFS() {
+        if (!overlay.classList.contains("open")) return;
+        overlay.classList.remove("open");
+        if (openCtx) {
+          openCtx.frame.insertBefore(openCtx.diag, openCtx.frame.querySelector(".apx-toolbar") || null);
+          openCtx = null;
+        }
+        document.body.classList.remove("no-scroll");
+      }
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") closeFS();
+      });
+      /* 全屏顶栏按钮：作用于当前打开图 */
+      overlay.addEventListener("click", function (e) {
+        var btn = e.target.closest ? e.target.closest(".apx-tbtn[data-act]") : null;
+        if (!btn) return;
+        var act = btn.getAttribute("data-act");
+        if (act === "close") { closeFS(); return; }
+        if (!openCtx) return;
+        var c = openCtx.centerPt();
+        if (act === "zoom-in") openCtx.zoomAt(1.35, c[0], c[1]);
+        else if (act === "zoom-out") openCtx.zoomAt(1 / 1.35, c[0], c[1]);
+        else if (act === "fit") openCtx.fit();
+        else if (act === "actual") { openCtx.state.z = 1; openCtx.state.x = 0; openCtx.state.y = 0; openCtx.apply(); }
+        else if (act === "export") openCtx.exportPNG();
+      });
+
+      /* 逐张图初始化 */
+      document.querySelectorAll(".apx-frame").forEach(function (frame) {
+        var diag = frame.querySelector(".apx-diagram");
+        if (!diag) return;
+        var title = diag.getAttribute("data-title") || "系统架构";
+        var vb = diag.viewBox.baseVal;
+        var NAT_W = vb.width, NAT_H = vb.height;
+        var state = { z: 1, x: 0, y: 0 };
+        var MIN_Z = 1, MAX_Z = 6;
+        var dragging = false, dragMoved = false, sx = 0, sy = 0, s0 = null;
+
+        /* 注入工具栏（若不存在） */
+        var toolbar = frame.querySelector(".apx-toolbar");
+        if (!toolbar) {
+          frame.insertAdjacentHTML("beforeend", TOOLBAR_TPL);
+          toolbar = frame.querySelector(".apx-toolbar");
+        }
+        var labels = toolbar.querySelectorAll("[data-zoom-label]");
+        var overLabel = overlay.querySelector("[data-zoom-label]");
+
+        function apply() {
+          var w = NAT_W / state.z, h = NAT_H / state.z;
+          var maxX = NAT_W - w, maxY = NAT_H - h;
+          state.x = Math.max(0, Math.min(maxX, state.x));
+          state.y = Math.max(0, Math.min(maxY, state.y));
+          vb.x = state.x; vb.y = state.y; vb.width = w; vb.height = h;
+          var txt = Math.round(state.z * 100) + "%";
+          labels.forEach(function (el) { el.textContent = txt; });
+          if (openCtx && openCtx.diag === diag && overLabel) overLabel.textContent = txt;
+          diag.classList.toggle("apx-zoomable", state.z > 1.001);
+        }
+        function toUser(cx, cy) {
+          var r = diag.getBoundingClientRect();
+          return {
+            x: state.x + (cx - r.left) / r.width * (NAT_W / state.z),
+            y: state.y + (cy - r.top) / r.height * (NAT_H / state.z)
+          };
+        }
+        function zoomAt(factor, cx, cy) {
+          var nz = Math.max(MIN_Z, Math.min(MAX_Z, state.z * factor));
+          if (nz === state.z) return;
+          var r = diag.getBoundingClientRect();
+          var u = toUser(cx, cy);
+          state.z = nz;
+          state.x = u.x - (cx - r.left) / r.width * (NAT_W / nz);
+          state.y = u.y - (cy - r.top) / r.height * (NAT_H / nz);
+          apply();
+        }
+        function fit() { state.z = 1; state.x = 0; state.y = 0; apply(); }
+        function centerPt() {
+          var r = diag.getBoundingClientRect();
+          return [r.left + r.width / 2, r.top + r.height / 2];
+        }
+        function openFS() {
+          stage.appendChild(diag);
+          overlay.classList.add("open");
+          document.body.classList.add("no-scroll");
+          openCtx = ctx;
+          if (titleEl) titleEl.textContent = title;
+        }
+        var ctx = { diag: diag, frame: frame, state: state, apply: apply, zoomAt: zoomAt, fit: fit, centerPt: centerPt, exportPNG: function () { exportPNG(); } };
+
+        /* 滚轮缩放（按住 Ctrl 显著加速；放大状态下接管滚轮） */
+        diag.addEventListener("wheel", function (e) {
+          var canZoomOut = state.z > MIN_Z;
+          if (!e.ctrlKey && !canZoomOut && e.deltaY > 0) return;
+          e.preventDefault();
+          var f = e.ctrlKey ? 1.35 : 1.2;
+          zoomAt(e.deltaY < 0 ? f : 1 / f, e.clientX, e.clientY);
+        }, { passive: false });
+
+        /* 拖拽平移（避开节点点击） */
+        diag.addEventListener("mousedown", function (e) {
+          if (e.button !== 0) return;
+          if (e.target.closest && e.target.closest(".apx-node")) return;
+          dragging = true; dragMoved = false;
+          sx = e.clientX; sy = e.clientY;
+          s0 = { z: state.z, x: state.x, y: state.y };
+          diag.classList.add("apx-dragging");
+          e.preventDefault();
+        });
+        window.addEventListener("mousemove", function (e) {
+          if (!dragging) return;
+          var r = diag.getBoundingClientRect();
+          var dx = e.clientX - sx, dy = e.clientY - sy;
+          if (Math.abs(dx) + Math.abs(dy) > 3) dragMoved = true;
+          state.x = s0.x - dx / r.width * (NAT_W / state.z);
+          state.y = s0.y - dy / r.height * (NAT_H / state.z);
+          apply();
+        });
+        window.addEventListener("mouseup", function () {
+          dragging = false;
+          diag.classList.remove("apx-dragging");
+        });
+        /* 拖拽结束后抑制随后的单击（避免误触发“点空白清除聚焦”） */
+        diag.addEventListener("click", function (e) {
+          if (dragMoved) { e.stopImmediatePropagation(); e.preventDefault(); dragMoved = false; }
+        }, true);
+        /* 双击复位 */
+        diag.addEventListener("dblclick", function () { fit(); });
+
+        /* 本图工具栏按钮 */
+        toolbar.addEventListener("click", function (e) {
+          var btn = e.target.closest ? e.target.closest(".apx-tbtn[data-act]") : null;
+          if (!btn) return;
+          e.stopPropagation();
+          var act = btn.getAttribute("data-act");
+          var c = centerPt();
+          if (act === "zoom-in") zoomAt(1.35, c[0], c[1]);
+          else if (act === "zoom-out") zoomAt(1 / 1.35, c[0], c[1]);
+          else if (act === "fit") fit();
+          else if (act === "actual") { state.z = 1; state.x = 0; state.y = 0; apply(); }
+          else if (act === "export") exportPNG();
+          else if (act === "fullscreen") openFS();
+        });
+
+        /* 导出 PNG（内联计算样式后离屏渲染，2x 像素密度） */
+        function exportPNG() {
+          var NS = "http://www.w3.org/2000/svg";
+          var clone = diag.cloneNode(true);
+          clone.setAttribute("xmlns", NS);
+          clone.setAttribute("width", NAT_W * 2);
+          clone.setAttribute("height", NAT_H * 2);
+          clone.setAttribute("viewBox", "0 0 " + NAT_W + " " + NAT_H);
+          clone.querySelectorAll(".apx-token, .apx-live").forEach(function (el) {
+            el.setAttribute("opacity", "0");
+          });
+          var srcEls = [], dstEls = [];
+          (function walk(node, out) {
+            for (var i = 0; i < node.children.length; i++) {
+              var c = node.children[i];
+              out.push(c);
+              walk(c, out);
+            }
+          })(diag, srcEls);
+          (function walk(node, out) {
+            for (var i = 0; i < node.children.length; i++) {
+              var c = node.children[i];
+              out.push(c);
+              walk(c, out);
+            }
+          })(clone, dstEls);
+          var props = ["fill", "stroke", "stroke-width", "stroke-dasharray", "font-size", "font-family", "font-weight", "opacity", "letter-spacing", "fill-opacity", "stroke-opacity"];
+          for (var i = 0; i < dstEls.length; i++) {
+            var src = srcEls[i], dst = dstEls[i];
+            if (!src || !dst || dst.tagName !== src.tagName) continue;
+            var cs = window.getComputedStyle(src);
+            for (var p = 0; p < props.length; p++) {
+              var name = props[p], val = cs.getPropertyValue(name);
+              if (name === "font-family") val = 'Geist, "PingFang SC", "Microsoft YaHei", sans-serif';
+              if (val) dst.setAttribute(name, val);
+            }
+          }
+          var bg = document.createElementNS(NS, "rect");
+          bg.setAttribute("x", "0"); bg.setAttribute("y", "0");
+          bg.setAttribute("width", NAT_W); bg.setAttribute("height", NAT_H);
+          var bgc = getComputedStyle(document.documentElement).getPropertyValue("--panel-2").trim();
+          bg.setAttribute("fill", bgc || "#0d1626");
+          clone.insertBefore(bg, clone.firstChild);
+          var url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml;charset=utf-8" }));
+          var img = new Image();
+          img.onload = function () {
+            var canvas = document.createElement("canvas");
+            canvas.width = NAT_W * 2; canvas.height = NAT_H * 2;
+            var ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, NAT_W * 2, NAT_H * 2);
+            URL.revokeObjectURL(url);
+            var a = document.createElement("a");
+            a.download = "apertureprism-" + title.replace(/\s+/g, "-") + ".png";
+            a.href = canvas.toDataURL("image/png");
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          };
+          img.onerror = function () { URL.revokeObjectURL(url); };
+          img.src = url;
+        }
+
+        apply();
+      });
+    })();
+  </script>
+</body>
+</html>
+
+
+
