@@ -167,6 +167,78 @@ describe("issue analysis orchestration", () => {
     expect(outcome.outcome).toBe("invalid");
   });
 
+  it("publishes the raw defect list for an external code-review request when schema repair keeps failing (#60)", async () => {
+    // 外部仓库代码审查请求：正文指向别的仓库并请 bot 找 bug。
+    const reviewContext: IssueContext = {
+      ...context,
+      issue: {
+        ...context.issue,
+        body:
+          "https://github.com/other/plugin/issues/17\n让bot找代码中的bug时，未说出任何bug",
+      },
+    };
+    // main 与 repair 都是自由格式缺陷清单，无法通过 JSON 契约。
+    const rawList =
+      "1. main.py 第 12 行：缺失 import re，调用 re.match 会抛 NameError。\n" +
+      "2. 第 40 行：except 捕获范围过宽，吞掉了真实错误。";
+    const { adapter, calls } = scriptedAdapter("provider-a", [
+      "Not JSON at all",
+      rawList,
+    ]);
+    const outcome = await analyzeIssue(
+      options([adapter], [candidate]),
+      reviewContext,
+    );
+
+    expect(calls()).toBe(2);
+    expect(outcome.outcome).toBe("valid");
+    if (outcome.outcome !== "valid") return;
+    expect(outcome.analysis.result.summary).toBe(rawList);
+    expect(outcome.analysis.result.category).toBe("bug");
+    expect(outcome.analysis.result.severity).toBe("unknown");
+    // 标注降级原因，供评论 / 结果页向用户说明这不是结构化分析。
+    expect(
+      outcome.analysis.adjustments.some((a) => a.field === "severity"),
+    ).toBe(true);
+  });
+
+  it("still reports invalid for non-review issues when repair keeps failing (#60 regression)", async () => {
+    // 普通缺陷报告：即使 repair 失败也不走宽松降级，保持 invalid。
+    const { adapter, calls } = scriptedAdapter("provider-a", [
+      "not valid json",
+      JSON.stringify({ contractVersion: "wrong" }),
+    ]);
+    const outcome = await analyzeIssue(
+      options([adapter], [candidate]),
+      context,
+    );
+
+    expect(calls()).toBe(2);
+    expect(outcome.outcome).toBe("invalid");
+  });
+
+  it("does not attempt lenient publish when repair output is empty (#60)", async () => {
+    const reviewContext: IssueContext = {
+      ...context,
+      issue: {
+        ...context.issue,
+        body:
+          "https://github.com/other/plugin/issues/3\n帮我检查 main.py 的 bug",
+      },
+    };
+    const { adapter, calls } = scriptedAdapter("provider-a", [
+      "Not JSON at all",
+      "", // repair 返回空：没有可发布的内容。
+    ]);
+    const outcome = await analyzeIssue(
+      options([adapter], [candidate]),
+      reviewContext,
+    );
+
+    expect(calls()).toBe(2);
+    expect(outcome.outcome).toBe("invalid");
+  });
+
   it("falls over to another candidate when the primary provider is missing", async () => {
     const { adapter } = scriptedAdapter("provider-b", [validIssueJson]);
     const outcome = await analyzeIssue(
