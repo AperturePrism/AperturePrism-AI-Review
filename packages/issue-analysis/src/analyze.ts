@@ -85,6 +85,93 @@ export type IssueAnalyzerOptions = {
   };
 };
 
+/**
+ * 是否为「代码审查请求」（issue #60 / #14）：
+ * 用户请 bot 去检查某个（常为外部仓库的）文件 / 代码有没有 bug，而不是报告一个
+ * 带复现步骤的缺陷。这类请求的模型输出天然是一份自由格式缺陷清单，很多时候
+ * 无法通过结构化 JSON 契约校验；命中时允许在 repair 仍失败后走宽松降级，
+ * 把原始清单发布出去，而不是只回一条「分析未完成」。
+ */
+function isCodeReviewRequest(
+  context: IssueContext,
+): boolean {
+  const title = context.issue.title ?? "";
+  const body = context.issue.body ?? "";
+  const hay = `${title}\n${body}`;
+  // 正文是否指向一个不是当前仓库的 GitHub 仓库。
+  const externalLink = /github\.com\/([^\/\s]+)\/([^\/\s#]+)/i.exec(hay);
+  const pointsToExternalRepo =
+    externalLink !== null &&
+    `${externalLink[1]}/${externalLink[2]}`.toLowerCase() !==
+      `${context.repository.owner}/${context.repository.name}`.toLowerCase();
+  // 审查意图：找/查/检查/审查 + bug/错误/缺陷/问题；或点名的源码文件 + 缺陷词。
+  const reviewIntent =
+    /(找|查|检查|审查|审阅|看看|找找|查看|看下)[\s\S]{0,16}(bug|错误|缺陷|毛病|哪里不对|哪里有问题|有没有问题)/i.test(
+      hay,
+    ) ||
+    /[\w.-]+\.(py|js|ts|tsx|go|java|rs|c|cpp|h|sh|json)\b[\s\S]{0,24}(bug|错误|缺陷|问题)/i.test(
+      hay,
+    );
+  return reviewIntent && pointsToExternalRepo;
+}
+
+/**
+ * 宽松降级：把模型输出的原始缺陷清单包装成一份合法分析结果，使评论能展示真实
+ * 的代码审查产出，而不是「分析未完成」的泛化失败消息（issue #60）。structured
+ * 信息（severity/priority/evidence）无法从自由文本中可靠提取，统一保守取值，
+ * 并把降级原因记入 adjustments 以便用户知情。
+ */
+function lenientCodeReviewOutcome(
+  rawText: string,
+  usage: ModelUsage,
+  candidate: ModelCandidate,
+  attempts: readonly ModelAttemptOutcome[],
+  durationMs: number,
+): { outcome: "valid"; analysis: GradedIssueAnalysis; usage: ModelUsage; candidate: ModelCandidate; attempts: readonly ModelAttemptOutcome[]; durationMs: number } {
+  const trimmed = (rawText ?? "").trim();
+  const summary =
+    trimmed.length > 0
+      ? trimmed.slice(0, 2_000)
+      : "（模型未返回具体缺陷清单）";
+  const analysis: GradedIssueAnalysis = {
+    result: {
+      contractVersion: "issue-analysis/v1",
+      category: "bug",
+      summary,
+      severity: "unknown",
+      priority: "needs_triage",
+      quality: trimmed.length > 0 ? "actionable" : "invalid",
+      proposedChanges: [],
+      evidence: [],
+      missingInformation: [],
+      troubleshooting: [],
+      suggestedLabels: ["code-review"],
+      suggestedActions:
+        trimmed.length > 0
+          ? ["请人工核对上方缺陷清单，确认后再实施修改。"]
+          : [],
+      confidence: { severity: 0, rootCause: 0, suggestion: 0.5 },
+    },
+    adjustments: [
+      {
+        field: "severity",
+        from: "schema-json",
+        to: "raw-text",
+        reason:
+          "代码审查请求的模型输出未通过结构化契约校验，已按原始缺陷清单发布（issue #60）。",
+      },
+    ],
+  };
+  return {
+    outcome: "valid",
+    analysis,
+    usage,
+    candidate,
+    attempts,
+    durationMs,
+  };
+}
+
 export type IssueAnalysisOutcome =
   | {
       outcome: "valid";
@@ -380,6 +467,23 @@ export async function analyzeIssue(
       attempts,
       durationMs: now() - startedAt,
     };
+  }
+
+  // 宽松降级（issue #60）：代码审查请求（外部仓库「帮我检查 xxx 的 bug」）的模型
+  // 输出是自由格式缺陷清单，JSON 契约校验天然难以通过，main + repair 两次都拿不
+  // 到合法 JSON 时仍不回泛化失败，而是把评审产物直接发布——用户要的是缺陷结论，
+  // 不是「分析未完成」。
+  if (isCodeReviewRequest(context)) {
+    const raw = repair.response.content.trim();
+    if (raw.length > 0) {
+      return lenientCodeReviewOutcome(
+        raw,
+        usage,
+        repair.candidate,
+        attempts,
+        now() - startedAt,
+      );
+    }
   }
 
   return { outcome: "invalid", usage, attempts, durationMs: now() - startedAt };
