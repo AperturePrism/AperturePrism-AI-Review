@@ -249,6 +249,23 @@ export async function analyzeIssue(
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
     });
 
+  // 空响应重试（与 pr-review 工具循环的 invokeWithEmptyRetry 同策略）：部分
+  // reasoning 模型（如 DeepSeek/MiniMax 渠道）在携带预读源码的大请求下偶发
+  // 返回「既无 content 也无 tool_calls」的空消息。这是瞬态抖动而非真实失败，
+  // 直接上抛会让整个分析无谓地致命失败（issue #72 现场）。
+  const invokeOnceWithEmptyRetry: typeof invokeOnce = async (request) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await invokeOnce(request);
+      } catch (error) {
+        const emptyResponse =
+          error instanceof Error &&
+          /did not contain message content/.test(error.message);
+        if (!emptyResponse || attempt >= 2) throw error;
+      }
+    }
+  };
+
   // 工具探索复用 PR 审查已验证的循环实现，它自行构造请求并注入工具定义。
   // 仍保留 main 这次路由调用：candidate 供修复阶段 sticky，attempts/usage
   // 供 attempt 记账，两者都无法从循环内部获得。代价是开启探索时多一次调用，
@@ -259,7 +276,7 @@ export async function analyzeIssue(
   const codeAccess: "enabled" | "disabled" = options.tools
     ? "enabled"
     : "disabled";
-  const main = await invokeOnce(
+  const main = await invokeOnceWithEmptyRetry(
     buildIssueAnalysisRequest(
       context,
       options.promptVersion,
@@ -271,7 +288,7 @@ export async function analyzeIssue(
   let mainContent = main.response.content;
   if (options.tools) {
     const loop = await runToolLoop(
-      (request) => invokeOnce(request).then((result) => result.response),
+      (request) => invokeOnceWithEmptyRetry(request).then((result) => result.response),
       buildIssueAnalysisMessages(
         context,
         options.promptVersion,
