@@ -87,10 +87,13 @@ export type IssueAnalyzerOptions = {
 
 /**
  * 是否为「代码审查请求」（issue #60 / #14）：
- * 用户请 bot 去检查某个（常为外部仓库的）文件 / 代码有没有 bug，而不是报告一个
- * 带复现步骤的缺陷。这类请求的模型输出天然是一份自由格式缺陷清单，很多时候
- * 无法通过结构化 JSON 契约校验；命中时允许在 repair 仍失败后走宽松降级，
- * 把原始清单发布出去，而不是只回一条「分析未完成」。
+ * 用户请 bot 去检查某个文件 / 代码有没有 bug（常见于外部仓库「帮我看看 xxx 的
+ * bug」），而不是报告一个带复现步骤的缺陷。这类请求的模型输出天然是一份自由
+ * 格式缺陷清单，很多时候无法通过结构化 JSON 契约校验；命中时允许在 repair 仍
+ * 失败后走宽松降级，把原始清单发布出去，而不是只回一条「分析未完成」。
+ *
+ * 只在 repair 两次都拿不到合法 JSON 之后才咨询这个判定，因此即使放宽也不会把
+ * 正常输出 JSON 的分析降级——判定的是「模型确实在写自由文本」的审查请求。
  */
 function isCodeReviewRequest(
   context: IssueContext,
@@ -98,21 +101,20 @@ function isCodeReviewRequest(
   const title = context.issue.title ?? "";
   const body = context.issue.body ?? "";
   const hay = `${title}\n${body}`;
-  // 正文是否指向一个不是当前仓库的 GitHub 仓库。
-  const externalLink = /github\.com\/([^\/\s]+)\/([^\/\s#]+)/i.exec(hay);
-  const pointsToExternalRepo =
-    externalLink !== null &&
-    `${externalLink[1]}/${externalLink[2]}`.toLowerCase() !==
-      `${context.repository.owner}/${context.repository.name}`.toLowerCase();
-  // 审查意图：找/查/检查/审查 + bug/错误/缺陷/问题；或点名的源码文件 + 缺陷词。
-  const reviewIntent =
-    /(找|查|检查|审查|审阅|看看|找找|查看|看下)[\s\S]{0,16}(bug|错误|缺陷|毛病|哪里不对|哪里有问题|有没有问题)/i.test(
-      hay,
-    ) ||
-    /[\w.-]+\.(py|js|ts|tsx|go|java|rs|c|cpp|h|sh|json)\b[\s\S]{0,24}(bug|错误|缺陷|问题)/i.test(
+  // 点名了源码文件（如 main.py / app.js）并要求查问题。
+  const namesFileWithBug =
+    /[\w.-]+\.(py|js|ts|tsx|go|java|rs|c|cpp|h|sh|json)\b[\s\S]{0,24}(bug|错误|缺陷|问题|毛病|哪里不对|哪里有问题)/i.test(
       hay,
     );
-  return reviewIntent && pointsToExternalRepo;
+  // 审查动作 + 代码/源码/文件 目标 + 缺陷词（字符序不限）。
+  const reviewsCodeAgainstBug =
+    /(找|查|检查|审查|审阅|看看|找找|查看|看下)[\s\S]{0,12}(代码|源码|文件|仓库)[\s\S]{0,12}(bug|错误|缺陷|问题|毛病)/i.test(
+      hay,
+    ) ||
+    /(代码|源码)[\s\S]{0,12}(找|查|检查|审查|看看)[\s\S]{0,12}(bug|错误|缺陷|问题|毛病)/i.test(
+      hay,
+    );
+  return namesFileWithBug || reviewsCodeAgainstBug;
 }
 
 /**
