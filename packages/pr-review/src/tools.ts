@@ -240,7 +240,13 @@ export async function runToolLoop(
       },
       "deep tool loop invoke",
     );
-    const response = await invokeWithEmptyRetry({ messages: current, tools });
+    const response = await invokeWithEmptyRetry({
+      messages: current,
+      tools,
+      // 工具循环的调用同样要给输出预算上限：reasoning 模型不限制时可能把
+      // max_tokens 全花在推理上、正文迟迟不产出，拖长单轮耗时（504 主因）。
+      maxOutputTokens: 4_000,
+    });
     rounds += 1;
 
     if (!response.toolCalls || response.toolCalls.length === 0) {
@@ -316,6 +322,7 @@ export async function runToolLoop(
               "工具调用轮次已达上限。请停止继续调用工具，基于已获取的信息直接输出最终审查结果。",
           },
         ],
+        maxOutputTokens: 4_000,
       });
       return {
         messages: [...current, { role: "assistant", content: final.content }],

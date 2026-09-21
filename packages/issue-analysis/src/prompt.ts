@@ -416,7 +416,9 @@ ${fenceUntrusted(invalidText)}
       },
     ],
     responseFormat: "json",
-    maxOutputTokens: 2_500,
+    // 大上下文 + reasoning 模型（deepseek-v4-pro）：推理 token 会先吃预算，
+    // 2500 不够会导致正文被挤掉（content 为空触发空响应兜底）。提到 4000。
+    maxOutputTokens: 4_000,
     temperature: 0.1,
   };
 }
@@ -437,7 +439,9 @@ export function buildIssueAnalysisRequest(
       codeAccess,
     ),
     responseFormat: "json",
-    maxOutputTokens: 2_500,
+    // 大上下文 + reasoning 模型（deepseek-v4-pro）：推理 token 会先吃预算，
+    // 2500 不够会导致正文被挤掉（content 为空触发空响应兜底）。提到 4000。
+    maxOutputTokens: 4_000,
     temperature: 0.2,
   };
 }

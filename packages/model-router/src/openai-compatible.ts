@@ -83,6 +83,8 @@ type ChatCompletionResponse = {
   choices?: {
     message?: {
       content?: unknown;
+      /** reasoning 模型（deepseek-v4-pro 等）可能只回 reasoning_content 而 content 为空。 */
+      reasoning_content?: unknown;
       tool_calls?: {
         id?: unknown;
         type?: unknown;
@@ -255,6 +257,16 @@ export function createOpenAICompatibleAdapter(
       }
 
       const hasToolCalls = toolCalls !== undefined && toolCalls.length > 0;
+      // reasoning 模型（deepseek-v4-pro 等）在推理 token 预算内可能把内容都写进
+      // reasoning_content，而 content 为空（此前即触 invalid_output 空响应，issue
+      // #72 / #226 / #17）。有 tool_calls 时忽略（正文在后续轮次产出）；
+      // 否则用 reasoning_content 兜底，避免把模型已产出的判断误判为空响应。
+      if (contentText.length === 0 && !hasToolCalls) {
+        const reasoning = message?.reasoning_content;
+        if (typeof reasoning === "string" && reasoning.trim().length > 0) {
+          contentText = reasoning.trim();
+        }
+      }
       if (contentText.length === 0 && !hasToolCalls)
         throw new ModelInvocationError(
           "invalid_output",

@@ -382,6 +382,44 @@ describe("OpenAI-compatible adapter tool calling", () => {
     ]);
   });
 
+  it("falls back to reasoning_content when content is empty (issue #226/#17)", async () => {
+    // reasoning 模型（deepseek-v4-pro）可能把内容写进 reasoning_content 而
+    // content 留空——此前被误判为空响应 invalid_output。
+    const { adapter } = adapterWith(() =>
+      jsonResponse({
+        choices: [
+          {
+            message: {
+              content: "",
+              reasoning_content: "issue 是加群通知未发送，需要检查通知触发逻辑……",
+            },
+          },
+        ],
+        usage: { prompt_tokens: 12, completion_tokens: 7 },
+      }),
+    );
+    const result = await adapter.invoke(
+      candidate,
+      request,
+      new AbortController().signal,
+    );
+    expect(result.content).toContain("加群通知未发送");
+  });
+
+  it("still rejects empty completions without reasoning content", async () => {
+    const { adapter } = adapterWith(() =>
+      jsonResponse({
+        choices: [{ message: { content: "", reasoning_content: " " } }],
+        usage: {},
+      }),
+    );
+    expect(
+      await categoryOf(
+        adapter.invoke(candidate, request, new AbortController().signal),
+      ),
+    ).toBe("invalid_output");
+  });
+
   it("joins array content into text", async () => {
     const { adapter } = adapterWith(() =>
       jsonResponse({

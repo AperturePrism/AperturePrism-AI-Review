@@ -698,7 +698,7 @@ async function main(): Promise<void> {
                   // 默认分支：Issue 不像 PR 那样绑定某个 commit。
                   ref: "HEAD",
                 },
-                maxRounds: 4,
+                maxRounds: 3,
                 forceToolUse: true,
               },
             }
