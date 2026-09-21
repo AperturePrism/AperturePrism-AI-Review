@@ -239,6 +239,44 @@ describe("issue analysis orchestration", () => {
     expect(outcome.outcome).toBe("invalid");
   });
 
+  it("strips reasoning-model thinking prose from the lenient review list (#60)", async () => {
+    const reviewContext: IssueContext = {
+      ...context,
+      issue: {
+        ...context.issue,
+        body: "https://github.com/other/plugin/issues/17\n帮我看一下main.py代码里的bug",
+      },
+    };
+    // repair 输出是 reasoning 模型的思考过程混着缺陷条目（type:function 修复后实测）。
+    const thinkingOutput =
+      "We need output a single JSON object per contract. Must analyze issue #17 code review of main.py. " +
+      "We have source provided. Need comply: category bug.\n\n" +
+      "We need be careful: prior output was truncated mid-analysis and invalid JSON. Now produce valid JSON.\n\n" +
+      "Let's enumerate defects in main.py based on code:\n" +
+      "- `__init__`: on Windows, asyncio.set_event_loop_policy may raise RuntimeError.\n" +
+      "- bili_analyze: parameters bvid/up_id are never used. Dead code.\n" +
+      "- bili_config tells user use /bili_config_set but no such command defined.";
+    const { adapter, calls } = scriptedAdapter("provider-a", [
+      "Not JSON at all",
+      thinkingOutput,
+    ]);
+    const outcome = await analyzeIssue(
+      options([adapter], [candidate]),
+      reviewContext,
+    );
+
+    expect(calls()).toBe(2);
+    expect(outcome.outcome).toBe("valid");
+    if (outcome.outcome !== "valid") return;
+    const summary = outcome.analysis.result.summary;
+    // 保留真实缺陷条目（列表项）。
+    expect(summary).toContain("`__init__`: on Windows");
+    expect(summary).toContain("bili_config tells user");
+    // 思考样板 / 复述任务的行被剥离。
+    expect(summary).not.toContain("We need output a single JSON object");
+    expect(summary).not.toContain("Now produce valid JSON");
+  });
+
   it("falls over to another candidate when the primary provider is missing", async () => {
     const { adapter } = scriptedAdapter("provider-b", [validIssueJson]);
     const outcome = await analyzeIssue(

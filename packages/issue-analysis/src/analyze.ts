@@ -118,6 +118,41 @@ function isCodeReviewRequest(
 }
 
 /**
+ * 清洗 reasoning 模型的思考样板（issue #60 补充）：deepseek-v4-pro 等模型的
+ * 输出可能是「自述如何回答 / 复述 prompt / 规划输出」的思考过程混着真实缺陷
+ * 条目。宽松降级发布前把纯思考行剥掉，只保留用户可读的缺陷清单（列表项、
+ * 代码符号、中文说明等）。
+ */
+function stripReasoningProse(rawText: string): string {
+  const lines = rawText.split(/\r?\n/).map((line) => line.trim());
+  const kept: string[] = [];
+  let sawSubstance = false;
+  for (const line of lines) {
+    if (line.length === 0) {
+      if (sawSubstance && kept.length > 0 && kept[kept.length - 1] !== "") kept.push("");
+      continue;
+    }
+    // 列出的缺陷条目：列表标记、代码符号、编号、行号引用等——视为实质内容。
+    const isSubstance =
+      /^[-*•]\s|^\d+[.)、]\s|`[^`]+`|\bdef\b|→|：/.test(line) ||
+      /[^\x00-\x7F]/.test(line); // 含中文等非 ASCII 多半是具体说明
+    // 纯英文思考样板：自我指令 / 复述任务 / 规划输出。
+    const isRecap =
+      /^(we|i|you|the|our|my)\s+(need|should|must|can|have|are|will|want)\b/i.test(line) ||
+      /^(now|please|note|remember|careful|importantly|first|finally|in\s+conclusion|to\s+comply|let['’]?s)\b/i.test(line) ||
+      /(must|need to|should)\s+(output|produce|return|follow|comply|provide|be)\b/i.test(line) ||
+      /(output should|please output|valid json|json object|per contract|as required|according to (the )?(prompt|instruction|contract)|contract compliance|comply: category|category bug|produce valid)/i.test(line);
+    if (isSubstance || !isRecap) {
+      kept.push(line);
+      if (isSubstance) sawSubstance = true;
+    }
+  }
+  const cleaned = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  // 清洗后若连一条实质内容都没有（全是思考模板），退回原文兜底，不丢信息。
+  return cleaned.length >= 40 || rawText.trim().length < 40 ? cleaned : rawText.trim();
+}
+
+/**
  * 宽松降级：把模型输出的原始缺陷清单包装成一份合法分析结果，使评论能展示真实
  * 的代码审查产出，而不是「分析未完成」的泛化失败消息（issue #60）。structured
  * 信息（severity/priority/evidence）无法从自由文本中可靠提取，统一保守取值，
@@ -130,7 +165,7 @@ function lenientCodeReviewOutcome(
   attempts: readonly ModelAttemptOutcome[],
   durationMs: number,
 ): { outcome: "valid"; analysis: GradedIssueAnalysis; usage: ModelUsage; candidate: ModelCandidate; attempts: readonly ModelAttemptOutcome[]; durationMs: number } {
-  const trimmed = (rawText ?? "").trim();
+  const trimmed = stripReasoningProse(rawText ?? "");
   const summary =
     trimmed.length > 0
       ? trimmed.slice(0, 2_000)
