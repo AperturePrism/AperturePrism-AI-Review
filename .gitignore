@@ -16,6 +16,19 @@ CI日志/
 # Local release artifacts
 dist-release/
 
+# IDE / editor
+.idea/
+*.iml
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# ESLint cache
+.eslintcache
+
+# Packaged artifacts
+*.tgz
+
 # Archived reference project (read-only, never committed)
 archive/
 # Marking tool local database
