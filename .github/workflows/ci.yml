@@ -1,0 +1,48 @@
+name: PR CI
+
+# 拉取请求自动校验：lint + typecheck + test（含 apps/web）。
+# 与 docker-publish.yml 的 test job 分工：那里跑在 push main / tag 上，
+# 这里让 PR 在合并前就拿到反馈，避免破坏性改动进 main 才发现。
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Lint + typecheck + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        # 未配置 APERTUREPRISM_INTEGRATION_DATABASE_URL 时 DB 集成测试自动跳过。
+        run: npm run test
+
+      - name: Web UI typecheck + tests
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
