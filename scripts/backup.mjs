@@ -47,7 +47,10 @@ const args = useCompose
     ];
 
 console.log(`backup: dumping to ${outFile.pathname}`);
-const child = spawn(process.platform === "win32" ? "docker" : "docker", args, {
+// compose 模式经 `docker compose exec postgres pg_dump` 导出；直连模式（设置了
+// PG_HOST）则直接调用本机 `pg_dump`。此前两者都 spawn `docker`，导致直连模式
+// 变成 `docker pg_dump …`（"docker: 'pg_dump' is not a docker command"）。
+const child = spawn(useCompose ? "docker" : "pg_dump", args, {
   env: { ...process.env, PGPASSWORD: process.env.PGPASSWORD ?? process.env.POSTGRES_PASSWORD ?? "" },
 });
 const chunks = [];
