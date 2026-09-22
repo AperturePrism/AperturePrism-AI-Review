@@ -10,6 +10,9 @@ const responseCache = new Map<string, { at: number; data: unknown }>();
 /** 使下一次请求绕过缓存（页面"刷新"按钮、写操作后调用）。 */
 export function bumpCache(): void {
   cacheVersion += 1;
+  // 写操作后旧缓存全部失效：直接清空比等 5s TTL 过期更干净，
+  // 也避免旧版本键位（cacheKey 带版本号）残留为孤儿条目占用内存。
+  responseCache.clear();
 }
 
 function cacheKey(url: string): string {
