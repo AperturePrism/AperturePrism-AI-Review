@@ -160,7 +160,7 @@ cd apps/web && npm install && npm run dev
 ```
 
 - API：[http://127.0.0.1:30001](http://127.0.0.1:30001)（健康检查 `/health/live`、`/health/ready`）
-- Web：[http://localhost:5174](http://localhost:5174)（Vite 代理到 API :30001）
+- Web：[http://localhost:5173](http://localhost:5173)（Vite 代理到 API :30001）
 
 ### 方式 C：GitHub 直跑（仓库公开，无需先 clone）
 
