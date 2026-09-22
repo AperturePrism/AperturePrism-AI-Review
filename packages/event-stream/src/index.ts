@@ -68,10 +68,15 @@ export function reduceTaskEvent(
 function statusFromEventType(type: string): string | null {
   if (type === "task.created") return "queued";
   if (type === "task.leased" || type === "task.started") return "running";
+  if (type === "task.publishing") return "publishing";
   if (type === "task.completed") return "completed";
   if (type === "task.failed") return "failed";
   if (type === "task.retry_wait" || type === "task.retry_scheduled")
     return "retry_wait";
+  // A task becomes claimable again when a retry delay expires (task.retry_ready)
+  // or when an expired lease is recovered back into the queue.
+  if (type === "task.retry_ready" || type === "task.lease_recovered")
+    return "queued";
   if (type === "task.canceled") return "canceled";
   return null;
 }

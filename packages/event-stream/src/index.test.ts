@@ -40,6 +40,18 @@ describe("reduceTaskEvent", () => {
     expect(b.status).toBe("queued");
     expect(b.eventCount).toBe(2);
   });
+
+  it("maps publishing, retry-ready and lease-recovered events to their statuses", () => {
+    const running = reduceTaskEvent(null, event(1, "task.started"));
+    const publishing = reduceTaskEvent(running, event(2, "task.publishing"));
+    expect(publishing.status).toBe("publishing");
+
+    const retryReady = reduceTaskEvent(null, event(3, "task.retry_ready"));
+    expect(retryReady.status).toBe("queued");
+
+    const recovered = reduceTaskEvent(null, event(4, "task.lease_recovered"));
+    expect(recovered.status).toBe("queued");
+  });
 });
 
 describe("heartbeatEvent", () => {
