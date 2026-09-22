@@ -13,6 +13,20 @@ const sensitivePaths = [
   "redisUrl",
   "prompt",
   "repositorySource",
+  // 额外的凭据/密钥类字段：防止 Provider 密钥、OAuth/QQ 令牌、私钥等
+  // 出现在日志 payload 中（含一层嵌套，如 { provider: { apiKey: … } }）。
+  "accessToken",
+  "refreshToken",
+  "apiKey",
+  "clientSecret",
+  "privateKey",
+  "password",
+  "*.accessToken",
+  "*.refreshToken",
+  "*.apiKey",
+  "*.clientSecret",
+  "*.privateKey",
+  "*.password",
 ];
 
 export type Correlation = {
