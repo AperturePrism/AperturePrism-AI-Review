@@ -67,11 +67,11 @@ export function useSse(url: string): SseState {
         es?.close();
         retryTimer = setTimeout(connect, 3_000);
       };
-      es.addEventListener("heartbeat", (raw) => {
-        const message = raw as MessageEvent<string>;
-        pushEvent("heartbeat", seqOf(message), safeParse(message.data));
-      });
-      es.onmessage = (raw) => {
+      // The server sends named events: `event: heartbeat` and `event: task`
+      // (see serializeSseEvent in packages/event-stream). Named events do NOT
+      // fire `onmessage`, so task events must be subscribed explicitly —
+      // otherwise the live stream silently drops every task event.
+      const handleTaskEvent = (raw: Event) => {
         const message = raw as MessageEvent<string>;
         const data = safeParse(message.data);
         // Replay/live overlap can deliver the same row twice; dedupe task
@@ -93,7 +93,17 @@ export function useSse(url: string): SseState {
           if (seenKeysRef.current.size > 2000) seenKeysRef.current.clear();
           if (record.createdAt) lastSeenAtRef.current = record.createdAt;
         }
-        pushEvent(message.lastEventId || "message", seqOf(message), data);
+        pushEvent("task", seqOf(message), data);
+      };
+      es.addEventListener("heartbeat", (raw) => {
+        const message = raw as MessageEvent<string>;
+        pushEvent("heartbeat", seqOf(message), safeParse(message.data));
+      });
+      es.addEventListener("task", handleTaskEvent);
+      // Defensive: forward any unnamed/default frames so they still surface.
+      es.onmessage = (raw) => {
+        const message = raw as MessageEvent<string>;
+        pushEvent("message", seqOf(message), safeParse(message.data));
       };
     };
 
