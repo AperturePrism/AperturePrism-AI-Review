@@ -401,7 +401,7 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
     envVar: "EMBEDDING_MODEL",
     hotReload: "poll",
     label: "Embedding 模型",
-    hint: "留空则用 EMBEDDING_MODEL（默认 nvidia/nemotron-3-embed-1b，2048 维）",
+    hint: "留空则用 EMBEDDING_MODEL（默认 text-embedding-3-small，1024 维）",
   },
   // ── QQ 机器人（在「机器人」页维护；仅启动时读一次，改完需重启 qq-bot）──
   {

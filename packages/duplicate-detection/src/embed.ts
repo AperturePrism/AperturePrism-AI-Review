@@ -1,6 +1,6 @@
 /** Dimension returned by nvidia/nemotron-3-embed-1b (symmetric, no additional params). */
-export const EMBEDDING_DIMENSION = 2048;
-export const EMBEDDING_MODEL = "nvidia/nemotron-3-embed-1b" as const;
+export const EMBEDDING_DIMENSION = 1024;
+export const EMBEDDING_MODEL = "text-embedding-3-small" as const;
 
 export class EmbeddingError extends Error {
   constructor(message: string) {
@@ -12,7 +12,7 @@ export class EmbeddingError extends Error {
 export type EmbedInput = {
   baseUrl: string;
   apiKey: string;
-  /** Model name; defaults to nvidia's symmetric 2048-d model. */
+  /** Model name; defaults to cf-free text-embedding-3-small (BGE-M3, 1024-d). */
   model?: string;
   texts: readonly string[];
   fetchImpl?: typeof fetch;

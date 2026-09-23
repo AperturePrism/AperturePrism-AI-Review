@@ -27,13 +27,13 @@ export const taskStatus = pgEnum("task_status", [
 
 /**
  * 向量列类型。维度必须与 `EMBEDDING_MODEL` 实际输出一致：
- * nvidia/nv-embed-v1（4096）已 EOL，当前用 nvidia/nemotron-3-embed-1b（2048）。
+ * 当前用 cf-free.binbim.locker 的 text-embedding-3-small（BGE-M3，1024 维）。
  * 更换嵌入模型且维度变化时，需生成 Drizzle migration 清空向量与 content_hash
  * 并 ALTER 列类型，随后由 index-worker 全量重建索引。
  */
-export const pgVector2048 = customType<{ data: number[]; driverData: string }>({
+export const pgVector1024 = customType<{ data: number[]; driverData: string }>({
   dataType() {
-    return "vector(2048)";
+    return "vector(1024)";
   },
   toDriver(value) {
     return `[${value.join(",")}]`;
@@ -295,7 +295,7 @@ export const issueDocuments = pgTable(
     languages: text("languages").array().notNull().default([]),
     hasStackTrace: boolean("has_stack_trace").default(false).notNull(),
     hasReproduction: boolean("has_reproduction").default(false).notNull(),
-    embedding: pgVector2048("embedding"),
+    embedding: pgVector1024("embedding"),
     /** sha256 of normalized text+signals; unchanged docs skip re-embedding. */
     contentHash: text("content_hash"),
     indexedAt: timestamp("indexed_at", { withTimezone: true })

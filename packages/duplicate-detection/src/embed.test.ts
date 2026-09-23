@@ -20,7 +20,7 @@ function embedWith(responder: (call: Call) => Response) {
 }
 
 describe("embedTexts", () => {
-  it("posts to /embeddings with model + input and returns 2048-d vectors", async () => {
+  it("posts to /embeddings with model + input and returns 1024-d vectors", async () => {
     const { calls, fn } = embedWith(() => {
       return new Response(
         JSON.stringify({
@@ -32,18 +32,18 @@ describe("embedTexts", () => {
     });
 
     const result = await embedTexts({
-      baseUrl: "https://newapi.binbim.top/v1",
+      baseUrl: "https://cf-free.binbim.locker/v1",
       apiKey: "k",
       texts: ["a", "b"],
       fetchImpl: fn,
     });
 
-    expect(calls[0]?.url).toBe("https://newapi.binbim.top/v1/embeddings");
+    expect(calls[0]?.url).toBe("https://cf-free.binbim.locker/v1/embeddings");
     const parsed = JSON.parse(String(calls[0]?.init.body)) as {
       model: string;
       input: string[];
     };
-    expect(parsed.model).toBe("nvidia/nemotron-3-embed-1b");
+    expect(parsed.model).toBe("text-embedding-3-small");
     expect(parsed.input).toEqual(["a", "b"]);
     expect(result.vectors).toHaveLength(2);
     expect(result.vectors[0]).toHaveLength(EMBEDDING_DIMENSION);

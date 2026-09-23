@@ -30,7 +30,7 @@ export type RecallInput = {
 
 /**
  * Persists a normalized issue document for later full-text / signal recall.
- * Upserts on (repositoryId, issueNumber). An optional 2048-d embedding is
+ * Upserts on (repositoryId, issueNumber). An optional 1024-d embedding is
  * stored for vector recall; pass null/omit to leave (or clear) it. `contentHash`
  * is a fingerprint of the normalized text+signals so an index worker can skip
  * re-embedding documents whose content has not changed.
@@ -192,7 +192,7 @@ export type VectorRecallRow = {
 /**
  * Recalls candidates by embedding similarity using exact cosine distance
  * (`<=>`). pgvector indexes (hnsw/ivfflat) are capped at 2000 dimensions, so
- * the 2048-d nemotron vector cannot be indexed; an exact sequential scan is
+ * the 1024-d vector is not indexed; an exact sequential scan is
  * used instead, which is fine at typical issue-corpus sizes. Like full-text
  * recall, this only proposes candidates — it never decides a duplicate.
  */

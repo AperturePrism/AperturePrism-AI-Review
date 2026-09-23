@@ -149,7 +149,7 @@ const environmentSchema = z.object({
   EMBEDDING_BASE_URL: z.string().min(1).optional(),
   /** Separate embedding API key; if unset, EMBEDDING_BASE_URL is ignored. */
   EMBEDDING_API_KEY: z.string().min(1).optional(),
-  EMBEDDING_MODEL: z.string().min(1).default("nvidia/nemotron-3-embed-1b"),
+  EMBEDDING_MODEL: z.string().min(1).default("text-embedding-3-small"),
   /**
    * Default review/analysis model used by the setup wizard when seeding role
    * policies before any model list has been fetched. Deployment-specific: set
