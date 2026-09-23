@@ -1013,7 +1013,7 @@ export async function loginLocal(input: {
     token?: string;
     user?: AccountInfo;
   };
-  if (!response.ok || !data.token) {
+  if (!response.ok || !data.token || !data.user) {
     const reason = data.reason === "invalid_credentials" ? "用户名或密码错误" : (data.reason ?? "登录失败");
     throw new Error(reason);
   }
@@ -1037,7 +1037,7 @@ export async function registerLocal(input: {
     token?: string;
     user?: AccountInfo;
   };
-  if (!response.ok || !data.token)
+  if (!response.ok || !data.token || !data.user)
     throw new Error(data.reason ?? "创建管理员失败");
   return { token: data.token, user: data.user };
 }
