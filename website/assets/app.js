@@ -109,7 +109,7 @@
   /* ---------- GitHub star count ---------- */
   var star = document.getElementById("starCount");
   if (star) {
-    fetch("https://api.github.com/repos/BB0813/AperturePrism-AI-Review")
+    fetch("https://api.github.com/repos/AperturePrism/AperturePrism-AI-Review")
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) { if (d && d.stargazers_count != null) star.textContent = d.stargazers_count.toLocaleString(); })
       .catch(function () { star.textContent = "GitHub"; });

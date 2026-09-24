@@ -100,7 +100,7 @@ docker compose -f docker/docker-compose.prod.yml exec -T postgres \
 生产环境默认用 `docker/docker-compose.prod.yml`。以下两个 override 文件按需叠加：
 
 - **`docker/images-mirror.yml`（镜像站）**：当 NAS 无法直连 `ghcr.io`（Docker Go TLS 握手超时）时，
-  用国内镜像站重写各服务镜像，如 `ghcr.nju.edu.cn/bb0813/apertureprism-ai-review/*`。新增容器服务时
+  用国内镜像站重写各服务镜像，如 `ghcr.nju.edu.cn/apertureprism/apertureprism-ai-review/*`。新增容器服务时
   需同步在该文件补对应镜像重写条目，否则 pull 会直连 ghcr 失败。
 - **`docker/compose.verify.yml`（external 网络）**：当 Docker 地址池耗尽（bridge 网络创建失败）时，
   将全部服务挂到 external 网络 `apnet`（`apertureprism-verify`），并设 `AP_VERIFY=1` 让在线更新器

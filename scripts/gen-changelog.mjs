@@ -18,7 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const OUT = path.join(ROOT, "website", "changelog.html");
 
-const REPO = process.argv[2] || "BB0813/AperturePrism-AI-Review";
+const REPO = process.argv[2] || "AperturePrism/AperturePrism-AI-Review";
 const TOKEN = process.env.GITHUB_TOKEN || "";
 
 /** 最近 N 个版本默认展开，更早的折叠。 */
@@ -111,7 +111,7 @@ const head = `<!DOCTYPE html>
         <a href="architecture.html">架构</a>
       </nav>
       <div class="nav__actions">
-        <a class="btn btn--ghost" href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub</a>
+        <a class="btn btn--ghost" href="https://github.com/AperturePrism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub</a>
         <a class="btn btn--primary" href="index.html#quickstart">开始部署</a>
         <button class="nav__toggle" id="navToggle" aria-label="打开菜单" aria-expanded="false">
           <span></span><span></span><span></span>
@@ -129,7 +129,7 @@ const head = `<!DOCTYPE html>
       <a href="guide.html">配置教程</a>
       <a href="#timeline">更新日志</a>
       <a href="architecture.html">架构</a>
-      <a href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub ↗</a>
+      <a href="https://github.com/AperturePrism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub ↗</a>
     </nav>
   </div>
 

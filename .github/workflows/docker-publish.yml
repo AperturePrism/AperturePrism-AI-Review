@@ -68,7 +68,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/bb0813/apertureprism-ai-review/${{ matrix.target }}
+          images: ghcr.io/apertureprism/apertureprism-ai-review/${{ matrix.target }}
           flavor: |
             latest=auto
           tags: |
@@ -112,7 +112,7 @@ jobs:
           {
             echo "## $TAG"
             echo ""
-            echo "镜像已推送 GHCR：\`ghcr.io/bb0813/apertureprism-ai-review/<svc>:$TAG\`"
+            echo "镜像已推送 GHCR：\`ghcr.io/apertureprism/apertureprism-ai-review/<svc>:$TAG\`"
             echo ""
             echo "### 变更"
             if [ -n "$PREV" ]; then

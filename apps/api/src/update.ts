@@ -9,7 +9,7 @@ import { serializeSseEvent } from "../../../packages/event-stream/src/index.js";
 
 /* ---------- GitHub Container Registry version check ----------
    Public images can be queried anonymously via the Docker Registry HTTP API:
-     GET https://ghcr.io/v2/bb0813/apertureprism-ai-review/<svc>/tags/list
+     GET https://ghcr.io/v2/apertureprism/apertureprism-ai-review/<svc>/tags/list
      GET https://ghcr.io/v2/.../<svc>/manifests/<tag>  -> Docker-Content-Digest
    No read:packages token required. */
 
@@ -20,7 +20,7 @@ const REGISTRY_HOST = "ghcr.io";
  * 逐个尝试镜像站 —— 它们的 v2 API 与 ghcr.io 兼容且支持匿名 token。
  */
 const REGISTRY_FALLBACK_HOSTS = ["ghcr.nju.edu.cn", "docker.1ms.run"] as const;
-const REGISTRY_BASE = "bb0813/apertureprism-ai-review";
+const REGISTRY_BASE = "apertureprism/apertureprism-ai-review";
 const UPDATE_SERVICES = [
   "api",
   "web",

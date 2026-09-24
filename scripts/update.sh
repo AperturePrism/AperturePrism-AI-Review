@@ -192,7 +192,7 @@ sleep 2
 # waits a few seconds so the final "done" SSE event flushes to the WebUI first.
 stage api "重启 API 容器"
 log info "scheduling api restart…"
-API_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$(hostname)" 2>/dev/null || echo "ghcr.io/bb0813/apertureprism-ai-review/api:$TARGET")"
+API_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$(hostname)" 2>/dev/null || echo "ghcr.io/apertureprism/apertureprism-ai-review/api:$TARGET")"
 ENV_B64="$(base64 "$ENV_FILE" | tr -d '\n')"
 if docker run -d --rm --name "aprism-api-recreate-$(date +%s)" \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \

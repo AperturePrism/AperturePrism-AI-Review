@@ -69,7 +69,7 @@ WebUI（版本与更新区块） ──> apps/api (/update/*) ──> scripts/up
   "current": {
     "version": "v1.0.0",                 // 运行版本（来自 compose 注入 env UPDATE_VERSION 或镜像 label）
     "composeProject": "apertureprism-ai-review",
-    "web": { "image": "ghcr.io/bb0813/apertureprism-ai-review/web:v1.0.0", "digest": "sha256:…" },
+    "web": { "image": "ghcr.io/apertureprism/apertureprism-ai-review/web:v1.0.0", "digest": "sha256:…" },
     "api":  { "image": "…/api:v1.0.0",     "digest": "sha256:…" }
   },
   "latest": {
@@ -301,6 +301,6 @@ services:
 
 ## 12. 参考资料
 
-- GHCR Registry HTTP API（匿名 tags/manifests）：`https://ghcr.io/v2/bb0813/apertureprism-ai-review/<svc>/tags/list`
+- GHCR Registry HTTP API（匿名 tags/manifests）：`https://ghcr.io/v2/apertureprism/apertureprism-ai-review/<svc>/tags/list`
 - 现有健康检查：`apps/api` 的 `/health/live` `/health/ready`
 - 现有备份：`scripts/backup.mjs`；现有迁移：`docker-compose.prod.yml` 的 `migrate` 服务
