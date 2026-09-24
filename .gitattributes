@@ -1,21 +1,13 @@
-# 强制 LF 换行并规范文本/二进制识别，避免跨平台 CRLF 混入（Windows/SMB 环境尤甚）。
+# 规范文本/二进制识别，避免跨平台 CRLF 混入（Windows/SMB 环境尤甚）。
+#
+# 注：text=auto 只影响之后的 add/checkout，不会改写已入库 blob。若历史文件
+# 已含 CRLF，需一次性 `git add --renormalize .` 收口（本仓库当前为 LF，无需执行）。
 
-# 默认：文本自动规范化换行为 LF
-* text=auto eol=lf
+# 默认：文本自动规范化（仓库内统一 LF，checkout 按平台默认）
+* text=auto
 
-# 源码与脚本强制 LF
-*.ts text eol=lf
-*.tsx text eol=lf
-*.js text eol=lf
-*.mjs text eol=lf
-*.json text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
-*.md text eol=lf
+# 脚本必须 LF：Windows Git Bash 下也能稳定执行
 *.sh text eol=lf
-*.sql text eol=lf
-*.css text eol=lf
-*.html text eol=lf
 
 # 二进制文件不做任何转换
 *.png binary
@@ -25,7 +17,6 @@
 *.ico binary
 *.tgz binary
 *.tar.gz binary
-*.b64 binary
 
-# 不参与 diff 的生成物
-*.lock -diff
+# 仅禁止换行转换，保留 diff 与 merge（base64 脚本等非文本产物）
+*.b64 -text
