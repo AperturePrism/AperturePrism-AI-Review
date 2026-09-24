@@ -34,16 +34,24 @@ export function useSse(url: string): SseState {
   const lastSeenAtRef = useRef<string | null>(null);
   const seenKeysRef = useRef<Set<string>>(new Set());
 
-  const pushEvent = useCallback((type: string, seq: number, data: unknown) => {
-    if (seq > 0 && expectedRef.current !== 0 && seq !== expectedRef.current)
-      setHasGap(true);
-    expectedRef.current = seq + 1;
-    setLastSeq(seq);
-    setEvents((prev) => [
-      ...prev.slice(-(MAX_EVENTS - 1)),
-      { seq, type, data },
-    ]);
-  }, []);
+  const pushEvent = useCallback(
+    (type: string, seq: number, data: unknown, options?: { buffer?: boolean }) => {
+      // 序号游标只在有数字 id 时推进（seq<=0 表示无 id，不参与缺口检测）。
+      if (seq > 0) {
+        if (expectedRef.current !== 0 && seq !== expectedRef.current)
+          setHasGap(true);
+        expectedRef.current = seq + 1;
+        setLastSeq(seq);
+      }
+      // 心跳是保活信号，不进事件环形缓冲，避免挤占 MAX_EVENTS 把任务事件挤出。
+      if (options?.buffer === false) return;
+      setEvents((prev) => [
+        ...prev.slice(-(MAX_EVENTS - 1)),
+        { seq, type, data },
+      ]);
+    },
+    [],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -71,17 +79,15 @@ export function useSse(url: string): SseState {
       // (see serializeSseEvent in packages/event-stream). Named events do NOT
       // fire `onmessage`, so task events must be subscribed explicitly —
       // otherwise the live stream silently drops every task event.
-      const handleTaskEvent = (raw: Event) => {
-        const message = raw as MessageEvent<string>;
-        const data = safeParse(message.data);
-        // Replay/live overlap can deliver the same row twice; dedupe task
-        // events by their stable identity so the UI never double-counts.
-        if (
+      const ingestFrame = (data: unknown, seq: number) => {
+        const isTaskFrame =
           data &&
           typeof data === "object" &&
           "taskId" in data &&
-          "eventType" in data
-        ) {
+          "eventType" in data;
+        if (isTaskFrame) {
+          // Replay/live overlap can deliver the same row twice; dedupe task
+          // events by their stable identity so the UI never double-counts.
           const record = data as {
             taskId: string;
             eventType: string;
@@ -92,18 +98,27 @@ export function useSse(url: string): SseState {
           seenKeysRef.current.add(key);
           if (seenKeysRef.current.size > 2000) seenKeysRef.current.clear();
           if (record.createdAt) lastSeenAtRef.current = record.createdAt;
+          pushEvent("task", seq, data);
+        } else {
+          pushEvent("message", seq, data);
         }
-        pushEvent("task", seqOf(message), data);
       };
       es.addEventListener("heartbeat", (raw) => {
         const message = raw as MessageEvent<string>;
-        pushEvent("heartbeat", seqOf(message), safeParse(message.data));
+        // 心跳只推进序号游标（服务端心跳与任务共享同一递增序号），不写入事件缓冲。
+        pushEvent("heartbeat", seqOf(message), safeParse(message.data), {
+          buffer: false,
+        });
       });
-      es.addEventListener("task", handleTaskEvent);
-      // Defensive: forward any unnamed/default frames so they still surface.
+      es.addEventListener("task", (raw) => {
+        const message = raw as MessageEvent<string>;
+        ingestFrame(safeParse(message.data), seqOf(message));
+      });
+      // 兜底：协议保证帧都带 event（task / heartbeat），此路径仅为防御；
+      // 若收到 task 形态的默认帧，走与命名 task 事件相同的去重/游标逻辑。
       es.onmessage = (raw) => {
         const message = raw as MessageEvent<string>;
-        pushEvent("message", seqOf(message), safeParse(message.data));
+        ingestFrame(safeParse(message.data), seqOf(message));
       };
     };
 
