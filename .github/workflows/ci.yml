@@ -10,6 +10,9 @@ on:
 
 permissions:
   contents: read
+  # setup-node 的 cache: npm 通过 Actions Cache 读写依赖缓存，需要 actions 权限。
+  # fork PR 只能命中已有缓存、不能写入，属预期限制。
+  actions: write
 
 jobs:
   validate:
@@ -22,6 +25,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          # 后续步骤会执行 PR 中的 npm 脚本，不保留 job token 凭据。
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -38,11 +43,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        # 未配置 APERTUREPRISM_INTEGRATION_DATABASE_URL 时 DB 集成测试自动跳过。
+      - name: Test (DB 集成测试未配置库时跳过)
+        # 未配置 APERTUREPRISM_INTEGRATION_DATABASE_URL 时，DB 集成测试自动跳过：
+        # 本 job 不提供数据库 service，故该路径会稳定跳过，绿灯仅代表单测通过。
         run: npm run test
 
       - name: Web UI typecheck + tests
+        # apps/web 是独立 workspace（有独立 package-lock.json，不在根 workspaces 内），
+        # 需单独 npm ci 安装后验证，与 docker-publish.yml 的 Web UI tests 步骤一致。
         working-directory: apps/web
         run: |
           npm ci
