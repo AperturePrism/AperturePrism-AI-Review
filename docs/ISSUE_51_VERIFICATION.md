@@ -2,7 +2,7 @@
 
 > 验证时间：2026-09-03
 > 涉及版本：v1.0.108
-> 关联 Issue：[#51 缺陷类审核结果已配置建议改动块，但 bot 实际输出缺少该模块](https://github.com/BB0813/AperturePrism-AI-Review/issues/51)
+> 关联 Issue：[#51 缺陷类审核结果已配置建议改动块，但 bot 实际输出缺少该模块](https://github.com/AperturePrism/AperturePrism-AI-Review/issues/51)
 
 ## 一、用户反馈
 

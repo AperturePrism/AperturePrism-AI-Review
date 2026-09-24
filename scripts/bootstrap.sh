@@ -3,19 +3,19 @@
 #
 # 用法：
 #   # 直跑（拉取最新 main 源码到本地目录再安装）：
-#   curl -fsSL https://raw.githubusercontent.com/BB0813/AperturePrism-AI-Review/main/scripts/bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/AperturePrism/AperturePrism-AI-Review/main/scripts/bootstrap.sh | bash
 #   # 传参（例如跳过容器/跳过构建）：
 #   curl -fsSL .../scripts/bootstrap.sh | bash -s -- --skip-docker
 #   # 本地已检出仓库时直接调用本文件，等价于执行 ./scripts/install.sh：
 #   ./scripts/bootstrap.sh --help
 #
 # 环境变量覆盖：
-#   APERTUREPRISM_REPO_URL  仓库地址（默认 https://github.com/BB0813/AperturePrism-AI-Review.git）
+#   APERTUREPRISM_REPO_URL  仓库地址（默认 https://github.com/AperturePrism/AperturePrism-AI-Review.git）
 #   APERTUREPRISM_REF       分支或标签（默认 main）
 #   APERTUREPRISM_SRC_DIR   本地安装源码目录（默认 $HOME/.apertureprism/AperturePrism-AI-Review）
 set -euo pipefail
 
-REPO_URL="${APERTUREPRISM_REPO_URL:-https://github.com/BB0813/AperturePrism-AI-Review.git}"
+REPO_URL="${APERTUREPRISM_REPO_URL:-https://github.com/AperturePrism/AperturePrism-AI-Review.git}"
 REF="${APERTUREPRISM_REF:-main}"
 SRC_DIR="${APERTUREPRISM_SRC_DIR:-$HOME/.apertureprism/AperturePrism-AI-Review}"
 
@@ -56,7 +56,7 @@ acquire() {
   else
     # 无 git 时回退到 codeload tarball（REF 需为分支名）。
     local archive
-    archive="https://codeload.github.com/BB0813/AperturePrism-AI-Review/tar.gz/refs/heads/$REF"
+    archive="https://codeload.github.com/AperturePrism/AperturePrism-AI-Review/tar.gz/refs/heads/$REF"
     mkdir -p "$SRC_DIR.tmp"
     curl -fsSL "$archive" | tar -xz --strip-components=1 -C "$SRC_DIR.tmp" \
       || { rm -rf "$SRC_DIR.tmp"; return 1; }

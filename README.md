@@ -2,7 +2,7 @@
 
 独立开发的 **GitHub Issue 分析与 Pull Request 审查平台**：接入 GitHub 事件（Webhook/OAuth），由任务引擎 + 多模型路由器驱动分析 Worker，对 Issue 做结构化分级分析、对 PR 做多专家审查并发布评论/Review；附带 Web 控制台（深色玻璃 UI）、QQ 机器人渠道、重复检测（全文+信号+向量 RAG）、仓库记忆、Agent Skills / 专家团队与完整运维能力（审计、备份、速率限制、Docker 一键部署）。
 
-仓库：[BB0813/AperturePrism-AI-Review](https://github.com/BB0813/AperturePrism-AI-Review)
+仓库：[AperturePrism/AperturePrism-AI-Review](https://github.com/AperturePrism/AperturePrism-AI-Review)
 
 ---
 
@@ -120,7 +120,7 @@ AperturePrism 把「AI 代码审查」做成了一条可落地的产品链路，
 
 ```bash
 # Linux / macOS：curl 直跑（无需先 clone，自动拉取 main 源码后执行完整安装）
-curl -fsSL https://raw.githubusercontent.com/BB0813/AperturePrism-AI-Review/main/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AperturePrism/AperturePrism-AI-Review/main/scripts/bootstrap.sh | bash
 
 # 交互选择安装方式（1=源码，2=Docker Compose 全栈）：
 curl -fsSL .../scripts/bootstrap.sh | bash -s -- --mode=compose
@@ -164,7 +164,7 @@ cd apps/web && npm install && npm run dev
 ### 方式 C：GitHub 直跑（仓库公开，无需先 clone）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BB0813/AperturePrism-AI-Review/main/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AperturePrism/AperturePrism-AI-Review/main/scripts/bootstrap.sh | bash
 # 传参示例（跳过容器）：
 curl -fsSL .../scripts/bootstrap.sh | bash -s -- --skip-docker
 ```

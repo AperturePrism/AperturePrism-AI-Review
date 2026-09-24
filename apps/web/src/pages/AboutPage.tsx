@@ -75,9 +75,9 @@ export function AboutPage() {
             <div className="result-title" style={{ marginBottom: 6 }}>团队官网 ↗</div>
             <p className="result-summary mono" style={{ fontSize: 12.5 }}>https://www.aprism.top</p>
           </a>
-          <a className="result-card" href="https://github.com/BB0813/AperturePrism-AI-Review" target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+          <a className="result-card" href="https://github.com/AperturePrism/AperturePrism-AI-Review" target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
             <div className="result-title" style={{ marginBottom: 6 }}>GitHub 仓库 ↗</div>
-            <p className="result-summary mono" style={{ fontSize: 12.5 }}>BB0813/AperturePrism-AI-Review</p>
+            <p className="result-summary mono" style={{ fontSize: 12.5 }}>AperturePrism/AperturePrism-AI-Review</p>
           </a>
         </div>
       </section>
