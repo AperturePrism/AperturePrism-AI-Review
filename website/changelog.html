@@ -67,15 +67,23 @@
 
     <div class="container">
       <div class="chlog__meta mono">
-        <span>当前最新 <strong>v1.2.11</strong></span>
+        <span>当前最新 <strong>v1.2.12</strong></span>
         <i></i>
-        <span>共 123 个版本</span>
+        <span>共 124 个版本</span>
         <i></i>
         <span>起始 2026-08-19 21:29</span>
       </div>
 
       <div class="timeline" id="timeline">
         <details class="ver" open data-latest="">
+          <summary>
+            <span class="ver__tag">v1.2.12</span>
+            <span class="ver__date mono">2026-09-24 21:39</span>
+            <span class="ver__count mono">18 项</span>
+          </summary>
+          <ul class="ver__items"><li class="cl-misc"><span class="cl-tag">misc</span><span>嵌入切换为 text-embedding-3-small（BGE-M3 1024 维）+ 迁移 0022</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>登录/注册响应 user 缺省时按失败处理（typecheck 收窄）</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>chore(ci,web): PR CI 超时上限 + 缓存版本快照防竞态回填</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>写操作后清空短期 GET 缓存，避免孤儿条目堆积 (#91)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>ci: 新增 pull_request 校验工作流（lint + typecheck + test） (#89)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>新增 .editorconfig 统一编辑器行为 (#84)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>移除指向不存在文件 docs/HANDOFF_PROMPT.txt 的失效链接 (#83)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>修正本地 Web 开发端口为 5173（与 vite.config 一致） (#81)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>扩展日志脱敏字段，覆盖凭据/密钥类 payload (#90)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>补充 IDE/构建产物忽略项 (#88)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>新增 SECURITY.md 安全策略 (#87)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>新增 CONTRIBUTING.md 贡献指南 (#86)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>新增 .gitattributes 统一换行与二进制识别 (#85)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>直连备份模式改用 pg_dump，而非错误地 spawn docker (#80)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>SSE 客户端订阅 task 事件，修复实时任务事件丢失 (#79)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>映射缺失的 publishing/retry_ready/lease_recovered 状态事件 (#78)</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>自动更新官网更新日志页（2026-09-21）</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>自动更新官网更新日志页（2026-09-21）</span></li></ul>
+        </details>
+        <details class="ver" open>
           <summary>
             <span class="ver__tag">v1.2.11</span>
             <span class="ver__date mono">2026-09-21 15:19</span>
@@ -163,7 +171,7 @@
           </summary>
           <ul class="ver__items"><li class="cl-misc"><span class="cl-tag">misc</span><span>版本号 1.2.0 -&gt; 1.2.1，为发布 v1.2.1（#62 内容级检索 / PR 预读注入修复）</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>预读注入变更文件源码 + standard/deep 强制读仓，抑制 diff 外臆断误报</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>内容级检索加可观测日志与宽松路径解析（issue #62）</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>内容级检索覆盖中文 enhancement + 增强 bot /logs 与 /repos 输出（issue #62）</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>兜底注入相关源码，enhancement 无点名文件时也读仓（issue #62）</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>自动更新官网更新日志页（2026-09-12）</span></li></ul>
         </details>
-        <details class="ver" open>
+        <details class="ver">
           <summary>
             <span class="ver__tag">v1.2.0</span>
             <span class="ver__date mono">2026-09-12 08:37</span>
