@@ -35,7 +35,6 @@ const args = useCompose
       process.env.POSTGRES_DB ?? "apertureprism",
     ]
   : [
-      "pg_dump",
       "-h",
       process.env.PG_HOST,
       "-p",
