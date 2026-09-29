@@ -1621,9 +1621,13 @@ function isDefectIssue(context: IssueContext): boolean {
  * 并给出具体改动位置（issue #56）。标签含 feature/enhancement，或标题/正文
  * 含较强的功能请求语义（新增、支持某能力、希望加…）即命中；与 isDefectIssue
  * 相互独立，任一命中都会触发读仓。
+ *
+ * 关键词补充（现场反馈）：标题仅写「改进」「功能增加」等常见中文词的 issue
+ * 此前全部落空（旧词表只有「新增/优化/增强」），导致 feature=false → 不注入
+ * 读源码工具 → 输出通篇「未读取源码，路径待确认」。补 改进/改善/提升/增加/期望。
  */
 const FEATURE_HINT =
-  /feature|feat|enhancement|enhance|improvement|feature-request|新功能|新需求|功能请求|特性|新增|能否.*(支持|加|添加)|能不能.*(支持|加|添加)|希望.*(支持|加|添加|增加|做|实现)|建议.*(支持|加|添加|增加|做|实现|增强)|增强|优化|加一个|加个|添加.*(功能|支持)|支持.*功能|想要.*(功能|支持)|需求|提议/i;
+  /feature|feat|enhancement|enhance|improvement|feature-request|新功能|新需求|功能请求|特性|新增|改进|改善|提升|增强|优化|增加|期望|能否.*(支持|加|添加)|能不能.*(支持|加|添加)|希望.*(支持|加|添加|增加|做|实现|改进|改善|增强)|建议.*(支持|加|添加|增加|做|实现|增强|改进|改善)|加一个|加个|添加.*(功能|支持)|支持.*功能|想要.*(功能|支持)|需求|提议/i;
 
 /** 标题/正文常见类型前缀（GitHub 模板风格），大小写不敏感、可带 severity。 */
 const TYPE_PREFIX_HINT = /^\[[^\]]*(bug|fix|fault|defect|enhancement|enhance|feature|feat|新功能|优化|需求|问题)[^\]]*\]/i;
