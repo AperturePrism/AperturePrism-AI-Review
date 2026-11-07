@@ -182,7 +182,8 @@ export type ToolLoopOptions = {
   /**
    * 强制读仓：当模型在尚未调用任何读取工具时就试图收尾（false「无法读取/无法审查」
    * 这类模板逃避）时，插入一条强制指令要求它先调用 read_file / list_directory 再作答。
-   * 最多强制 2 次；仍不调用则放行（避免死循环）。代码审查 / 缺陷任务应开启。
+   * 最多强制 3 次；仍不调用则放行并留 warning 日志（避免死循环，同时给运维留证据）。
+   * 代码审查 / 缺陷 / 功能请求任务均应开启。
    */
   forceToolUse?: boolean;
 };
@@ -252,7 +253,7 @@ export async function runToolLoop(
     if (!response.toolCalls || response.toolCalls.length === 0) {
       // 强制读仓：模型在从没调用过任何工具时就打算收尾（往往输出"无法读取/无法
       // 审查"这类逃避模板）。审查/缺陷任务必须让它真读仓后再作答。
-      if (forceToolUse && !sawToolCall && forcedCount < 2) {
+      if (forceToolUse && !sawToolCall && forcedCount < 3) {
         forcedCount += 1;
         current = [
           ...current,
@@ -262,11 +263,20 @@ export async function runToolLoop(
             content:
               "警告：你还没有调用任何读取工具就准备给出最终结论。这是一个要求读仓的任务，" +
               "你必须先用 read_file 或 list_directory 读取相关文件后再作答（path 用仓库内相对路径，" +
-              "根目录传空字符串，不要用绝对路径），不要在结论中说「无代码访问能力」。" +
+              "根目录传空字符串，不要用绝对路径），不要在结论中说「无代码访问能力」，" +
+              "也不要输出「未读取源码，路径待确认」占位路径。" +
               "请现在立刻调用工具。",
           },
         ];
         continue;
+      }
+      if (forceToolUse && !sawToolCall) {
+        // issue #106/#108：强制轮次用尽仍不调工具时必须留痕——这是"enhancement 类
+        // issue 不读源码"的直接证据，运维可据此定位是模型不配合还是网关不支持 tools。
+        logger.warn(
+          { owner: ctx.owner, name: ctx.name, rounds, forcedCount },
+          "deep tool loop: model refused to call tools after forced rounds",
+        );
       }
       logger.info(
         { rounds, owner: ctx.owner, name: ctx.name, toolCalls: 0 },

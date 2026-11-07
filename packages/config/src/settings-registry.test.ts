@@ -72,6 +72,7 @@ describe("registry integrity", () => {
       "issue_use_unified_sections",
       "issue_vision_enabled",
       "repo_rules_enabled",
+      "repo_rules_url",
       "spam_handling",
     ]);
   });
