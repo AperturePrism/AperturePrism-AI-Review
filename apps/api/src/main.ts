@@ -39,7 +39,6 @@ import {
   deleteLabelRule,
   deleteRepoMemory,
   ensureUser,
-  findValidSession,
   getRepositorySettings,
   getRepositorySettingsFor,
   getScanConfig,
@@ -85,7 +84,6 @@ import {
   isRepositorySettingKey,
   repositories,
   REPOSITORY_SETTING_KEYS,
-  setAdmin,
   setRepositorySetting,
   setUserRoles,
   subjectResults,
@@ -112,9 +110,6 @@ import {
 } from "./botctl.js";
 import {
   createGitHubClient,
-  ensureRepoRulesDir,
-  EXAMPLE_RULES_FILE,
-  fetchRepoRules,
   GitHubApiError,
   normalizeGitHubEvent,
   parseIssueCommand,
@@ -479,10 +474,6 @@ function clientIp(request: IncomingMessage): string {
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isUuid(value: string): boolean {
-  return UUID_PATTERN.test(value);
-}
 
 /** Routes that require the WebUI bearer token when it is configured. */
 const protectedPaths = [

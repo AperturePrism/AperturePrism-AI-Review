@@ -32,7 +32,11 @@
   }
   if (toggle && drawer) {
     toggle.addEventListener("click", function () {
-      drawer.classList.contains("open") ? closeDrawer() : openDrawer();
+      if (drawer.classList.contains("open")) {
+        closeDrawer();
+      } else {
+        openDrawer();
+      }
     });
     // close when a link inside drawer is tapped
     drawer.querySelectorAll("a").forEach(function (a) {
@@ -98,7 +102,7 @@
     ta.style.opacity = "0";
     document.body.appendChild(ta);
     ta.select();
-    try { document.execCommand("copy"); done(); } catch (e) { fail(); }
+    try { document.execCommand("copy"); done(); } catch { fail(); }
     document.body.removeChild(ta);
   }
 

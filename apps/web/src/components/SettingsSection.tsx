@@ -73,7 +73,6 @@ function MultiCheckField({
   const [checked, setChecked] = useState<string[]>(() => split(item.value));
   useEffect(() => {
     setChecked(split(item.value));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.value]);
 
   const toggle = (option: string) => {
@@ -310,7 +309,6 @@ export function SettingsSection({
         setError(explainUnknown(err));
       })
       .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keys.join(",")]);
 
   useEffect(() => load(), [load]);
