@@ -3,7 +3,8 @@
 独立开发的 **GitHub Issue 分析与 Pull Request 审查平台**：接入 GitHub 事件（Webhook/OAuth），由任务引擎 + 多模型路由器驱动分析 Worker，对 Issue 做结构化分级分析、对 PR 做多专家审查并发布评论/Review；附带 Web 控制台（深色玻璃 UI）、QQ 机器人渠道、重复检测（全文+信号+向量 RAG）、仓库记忆、Agent Skills / 专家团队与完整运维能力（审计、备份、速率限制、Docker 一键部署）。
 
 仓库：[AperturePrism/AperturePrism-AI-Review](https://github.com/AperturePrism/AperturePrism-AI-Review)
-
+交流群：[光圈棱镜-APrism-QQ群三周目](https://qm.qq.com/q/TD5Uu92pi0)
+**提交PR请在群内反馈 作者在上大学 没那么多时间天天盯着GitHub看**
 ---
 
 ## 目录
