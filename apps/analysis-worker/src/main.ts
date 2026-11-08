@@ -103,6 +103,7 @@ import {
   recordAttemptUsage,
   startTask,
 } from "../../../packages/task-engine/src/index.js";
+import { fetchExternalRepoRulesText } from "./external-repo-rules.js";
 import { createIssueAnalysisHandler } from "./handler.js";
 import { createPrReviewHandler } from "./pr-review-handler.js";
 import {
@@ -362,8 +363,8 @@ function joinRepoRulesSections(local: string, external: string): string {
 
 /**
  * issue #107：抓取 `repo_rules_url` 指向的外部审核规则文本。
- * 未配置 / 非 http(s) 链接 / 抓取失败时返回 undefined，不阻断分析（fail-open）。
- * 内容上限 256KB，超长截断；抓取超时 15 秒；仅接受 text/* 与无 content-type 响应。
+ * 未配置 / 非公网 http(s) 链接 / 抓取失败时返回 undefined，不阻断分析（fail-open）。
+ * 流式读取上限 256KB，超长截断；含 DNS 与重定向的总超时 15 秒；仅接受文本响应。
  */
 async function fetchExternalRepoRules(
   repoFullName: string,
@@ -382,36 +383,16 @@ async function fetchExternalRepoRules(
   }
   if (!/^https?:\/\/\S+$/i.test(url)) return undefined;
   try {
-    const res = await fetch(url, {
-      signal: AbortSignal.any(signal ? [signal, AbortSignal.timeout(15_000)] : [AbortSignal.timeout(15_000)]),
-      redirect: "follow",
-    });
-    if (!res.ok) {
-      logger.warn(
-        { repo: repoFullName, url, status: res.status },
-        "external repo rules: fetch returned non-OK; skipping",
-      );
-      return undefined;
-    }
-    const contentType = res.headers.get("content-type") ?? "";
-    if (contentType && !contentType.toLowerCase().startsWith("text/")) {
-      logger.warn(
-        { repo: repoFullName, url, contentType },
-        "external repo rules: non-text content-type; skipping",
-      );
-      return undefined;
-    }
-    const raw = await res.text();
-    if (!raw.trim()) return undefined;
-    const limited = raw.length > 256_000 ? `${raw.slice(0, 256_000)}\n\n（内容过长，已截断）` : raw;
+    const text = await fetchExternalRepoRulesText(url, signal);
+    if (text === undefined) return undefined;
     logger.info(
-      { repo: repoFullName, url, chars: limited.length },
+      { repo: repoFullName, chars: text.length },
       "external repo rules: fetched",
     );
-    return limited;
+    return text;
   } catch (error) {
     logger.warn(
-      { err: error, repo: repoFullName, url },
+      { err: error, repo: repoFullName },
       "external repo rules: fetch failed; skipping",
     );
     return undefined;
