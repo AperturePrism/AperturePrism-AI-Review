@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { and, desc, eq, inArray, like } from "drizzle-orm";
+import { and, desc, eq, like } from "drizzle-orm";
 import {
   BOOLEAN_DEFAULTS,
   createCredentialCipher,
@@ -349,7 +349,7 @@ async function loadRepoRules(
         { repo: repoFullName, file: EXAMPLE_RULES_FILE },
         "seeded example review rules on first analysis",
       );
-  } catch (error) {
+  } catch {
     logger.warn({ repo: repoFullName }, "seed rules directory skipped");
   }
   return externalRules;
@@ -2016,7 +2016,7 @@ async function verifyProposedChangePaths(input: {
           "proposed change path not found; dropped before publish",
         );
       }
-    } catch (error) {
+    } catch {
       // 校验失败（网络/限流等）不误删，保留原建议。
       kept.push(change);
     }

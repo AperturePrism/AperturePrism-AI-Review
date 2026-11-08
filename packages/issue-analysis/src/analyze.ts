@@ -135,7 +135,8 @@ function stripReasoningProse(rawText: string): string {
     // 列出的缺陷条目：列表标记、代码符号、编号、行号引用等——视为实质内容。
     const isSubstance =
       /^[-*•]\s|^\d+[.)、]\s|`[^`]+`|\bdef\b|→|：/.test(line) ||
-      /[^\x00-\x7F]/.test(line); // 含中文等非 ASCII 多半是具体说明
+      // eslint-disable-next-line no-control-regex -- 有意匹配非 ASCII（中文等实质内容）
+      /[^\x00-\x7F]/.test(line);
     // 纯英文思考样板：自我指令 / 复述任务 / 规划输出。
     const isRecap =
       /^(we|i|you|the|our|my)\s+(need|should|must|can|have|are|will|want)\b/i.test(line) ||

@@ -6,7 +6,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { ServerResponse } from "node:http";
 
 const BOTCTL_SCRIPT = process.env.BOTCTL_SCRIPT ?? "/app/scripts/botctl.sh";
 
