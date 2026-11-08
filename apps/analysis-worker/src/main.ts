@@ -104,6 +104,7 @@ import {
   recordAttemptUsage,
   startTask,
 } from "../../../packages/task-engine/src/index.js";
+import { beginCheckRun, checkRunIdempotencyKey } from "./check-run.js";
 import { createIssueAnalysisHandler } from "./handler.js";
 import { createPrReviewHandler } from "./pr-review-handler.js";
 import {
@@ -1301,43 +1302,15 @@ async function main(): Promise<void> {
       const cfg = await prReviewConfig();
       if (!cfg.checkRun) return;
       const { payload, identity } = prIdentity(task);
-      const githubClient = assertGithub(github);
-      const key = `check-run:${identity.owner}/${identity.name}#${payload.subjectNumber}:${payload.subjectRevision}`;
-      const existing = await publicationStore.findExternalObjectId(key);
-      if (existing !== null) {
-        // 重试 / WebUI 重新入队：上一次尝试可能已把 Check Run 收尾为失败终态
-        // （issue #103）。best-effort 重新置为进行中；若 GitHub 拒绝更新已完结
-        // 的 run，吞掉即可，不影响本次审查，成功后 finishCheckRun 会再更新。
-        try {
-          await githubClient.updateCheckRun({
-            installationId: payload.installationId,
-            owner: identity.owner,
-            name: identity.name,
-            checkRunId: Number(existing),
-            status: "in_progress",
-            title: "AI 代码审查进行中",
-            summary: "正在分析 PR 的变更与上下文，请稍候…",
-          });
-        } catch {
-          // best-effort：Check Run 状态回滚失败不阻断审查
-        }
-        return;
-      }
-      const run = await githubClient.createCheckRun({
+      await beginCheckRun({
+        db: database.db,
+        github: assertGithub(github),
+        taskId: task.id,
         installationId: payload.installationId,
         owner: identity.owner,
         name: identity.name,
-        headSha: payload.subjectRevision,
-        runName: "AperturePrism AI Review",
-        status: "in_progress",
-        title: "AI 代码审查进行中",
-        summary: "正在分析 PR 的变更与上下文，请稍候…",
-      });
-      await publicationStore.insert({
-        taskId: task.id,
-        idempotencyKey: key,
-        externalObjectId: String(run.id),
-        channel: "check_run",
+        pullNumber: payload.subjectNumber,
+        revision: payload.subjectRevision,
       });
     },
 
@@ -1346,7 +1319,12 @@ async function main(): Promise<void> {
       if (!cfg.checkRun) return;
       const { payload, identity } = prIdentity(task);
       const githubClient = assertGithub(github);
-      const key = `check-run:${identity.owner}/${identity.name}#${payload.subjectNumber}:${payload.subjectRevision}`;
+      const key = checkRunIdempotencyKey(
+        identity.owner,
+        identity.name,
+        payload.subjectNumber,
+        payload.subjectRevision,
+      );
       const runId = await publicationStore.findExternalObjectId(key);
       if (runId === null) return;
       const findings = review.findings.length;
@@ -1446,7 +1424,12 @@ async function main(): Promise<void> {
     if (!cfg.checkRun) return;
     const { payload, identity } = prIdentity(task);
     if (!github) return;
-    const key = `check-run:${identity.owner}/${identity.name}#${payload.subjectNumber}:${payload.subjectRevision}`;
+    const key = checkRunIdempotencyKey(
+      identity.owner,
+      identity.name,
+      payload.subjectNumber,
+      payload.subjectRevision,
+    );
     const runId = await publicationStore.findExternalObjectId(key);
     if (runId === null) return; // 从未创建过 Check Run，无需收尾
     const detail = (errorMessage ?? errorCategory).slice(0, 200);
