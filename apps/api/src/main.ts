@@ -1552,8 +1552,12 @@ async function handleTaskCancel(
   let skipped = 0;
   for (const taskId of ids) {
     const ok = await cancelTask(database.db, { taskId, reason: "manual_cancel" });
-    if (ok) canceled += 1;
-    else skipped += 1;
+    if (ok) {
+      canceled += 1;
+      // issue #103：任务取消后同步收尾 GitHub Check Run（best-effort，串行即可，
+      // 取消是低频管理操作）。
+      await finalizeCanceledCheckRun(taskId);
+    } else skipped += 1;
   }
   audit(request, "task.cancel", undefined, {
     taskIds: ids.length,
@@ -1561,6 +1565,68 @@ async function handleTaskCancel(
     skipped,
   });
   json(response, 200, { status: "ok", canceled, skipped }, requestId);
+}
+
+/**
+ * issue #103：手动取消 PR 审核任务后，best-effort 把对应的 GitHub Check Run
+ * 收尾为 cancelled。否则任务已终止，PR 检查区却永远显示"正在审核中"。
+ * 任何失败（未配置 GitHub / 无 publication / API 错误）都静默跳过——这只是
+ * 清理动作，不应影响取消流程本身。
+ */
+async function finalizeCanceledCheckRun(taskId: string): Promise<void> {
+  try {
+    const task = await database.db
+      .select({
+        taskType: analysisTasks.taskType,
+        payload: analysisTasks.payload,
+      })
+      .from(analysisTasks)
+      .where(eq(analysisTasks.id, taskId))
+      .limit(1);
+    const row = task[0];
+    if (!row || row.taskType !== "pr_review") return;
+    const payload = row.payload as
+      | {
+          installationId?: unknown;
+          repositoryFullName?: unknown;
+          subjectNumber?: unknown;
+        }
+      | null
+      | undefined;
+    if (!payload) return;
+
+    const publication = await database.db
+      .select({ externalObjectId: externalPublications.externalObjectId })
+      .from(externalPublications)
+      .where(
+        and(
+          eq(externalPublications.taskId, taskId),
+          eq(externalPublications.channel, "check_run"),
+        ),
+      )
+      .limit(1);
+    const checkRunId = Number(publication[0]?.externalObjectId ?? 0);
+    if (!Number.isInteger(checkRunId) || checkRunId <= 0) return;
+
+    const github = await githubClientPromise;
+    const installationId = String(payload.installationId ?? "");
+    const repositoryFullName = String(payload.repositoryFullName ?? "");
+    const [owner, name] = repositoryFullName.split("/");
+    if (!github || !installationId || !owner || !name) return;
+
+    await github.updateCheckRun({
+      installationId,
+      owner,
+      name,
+      checkRunId,
+      status: "completed",
+      conclusion: "cancelled",
+      title: "AI 审核已取消",
+      summary: "该审核任务已被手动取消。",
+    });
+  } catch {
+    // best-effort：Check Run 收尾失败不影响任务取消
+  }
 }
 
 /**
