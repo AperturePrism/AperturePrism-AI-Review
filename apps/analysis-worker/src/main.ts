@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { and, desc, eq, inArray, like } from "drizzle-orm";
+import { and, desc, eq, like } from "drizzle-orm";
 import {
   BOOLEAN_DEFAULTS,
   createCredentialCipher,
@@ -30,6 +30,7 @@ import {
 } from "../../../packages/database/src/index.js";
 import {
   ModelInvocationError,
+  type LeasedTask,
   type ModelCandidate,
   type ModelMessage,
   type ModelProviderAdapter,
@@ -103,6 +104,7 @@ import {
   recordAttemptUsage,
   startTask,
 } from "../../../packages/task-engine/src/index.js";
+import { beginCheckRun, checkRunIdempotencyKey } from "./check-run.js";
 import { createIssueAnalysisHandler } from "./handler.js";
 import { createPrReviewHandler } from "./pr-review-handler.js";
 import {
@@ -116,14 +118,16 @@ const heartbeatIntervalMs = 20_000;
 const idleDelayMs = 2_000;
 const retryDelayMs = 30_000;
 /** Shared logical deadline for the main analysis call and the bounded repair.
- *  2026-08 提到 10min：图片多模态（视觉模型）的处理耗时可超 5min。 */
-const analysisDeadlineMs = 600_000;
+ *  图片多模态（视觉模型）的处理耗时可超 5min；issue #102 反馈 10min 仍频繁
+ *  超时，提到 15min，并可用 WebUI 设置 issue_analysis_deadline_seconds 调整。 */
+const analysisDeadlineMs = 900_000;
 /**
  * 深读（读仓 + 工具循环多轮）单独预算：每轮工具循环携带已读源码的大上下文，
- * reasoning 模型单轮推理可能耗时 1-3 分钟，4 轮 + 主分析在 600s 内跑不完导致
- * `candidate exceeded deadline` 超时（issue #71/#73 深读现场）。给 15 分钟。
+ * reasoning 模型单轮推理可能耗时 1-3 分钟，多轮 + 主分析在主预算内跑不完导致
+ * `candidate exceeded deadline` 超时（issue #71/#73 深读现场）。给 20 分钟，
+ * 可用 WebUI 设置 issue_deep_analysis_deadline_seconds 调整。
  */
-const deepAnalysisDeadlineMs = 900_000;
+const deepAnalysisDeadlineMs = 1200_000;
 const analysisRetryPolicy = {
   maxAttemptsPerCandidate: 5,
   baseDelayMs: 1_000,
@@ -154,7 +158,7 @@ const engine: TaskEngineOperations = {
     beginPublishing(database.db, { taskId: task.id, workerId }),
   complete: (task) => completeTask(database.db, { taskId: task.id, workerId }),
   fail: async (task, errorCategory, errorMessage) => {
-    await failTask(database.db, {
+    return await failTask(database.db, {
       taskId: task.id,
       workerId,
       errorCategory,
@@ -543,6 +547,8 @@ async function main(): Promise<void> {
 
     analyze: async (context: IssueContext, signal) => {
       const repositoryFullName = `${context.repository.owner}/${context.repository.name}`;
+      // issue #102：时间预算与重试次数按设置解析（WebUI 可在线调整）。
+      const budgets = await resolveAnalysisBudgets(repositoryFullName);
       // 深度分析（读取仓库源码）默认关闭：会显著增加 token 消耗与耗时。
       const deep = await issueDeepAnalysisEnabled(repositoryFullName);
       // 决策留痕：tools 是否注入取决于 deep && (defect|feature|codeRef)，任一不成立
@@ -588,8 +594,8 @@ async function main(): Promise<void> {
               const res = await routeModelInvocation(adapters, {
                 candidates: issueCandidates,
                 request: buildFilePickRequest(ctx, candidatePaths),
-                deadlineMs: Math.min(analysisDeadlineMs, 30_000),
-                retryPolicy: analysisRetryPolicy,
+                deadlineMs: Math.min(budgets.analysisDeadlineMs, 30_000),
+                retryPolicy: budgets.retryPolicy,
                 ...(signal === undefined ? {} : { signal }),
               });
               const picked = parseFilePicks(res.response.content, candidatePaths);
@@ -664,7 +670,7 @@ async function main(): Promise<void> {
         adapters,
         candidates,
         deadlineMs: capDeadlineMs,
-        retryPolicy: analysisRetryPolicy,
+        retryPolicy: budgets.retryPolicy,
         signal,
         // exactOptionalPropertyTypes：undefined 不能显式赋给可选属性，条件展开。
         ...(promptVersion === undefined ? {} : { promptVersion }),
@@ -712,7 +718,7 @@ async function main(): Promise<void> {
           return await analyzeIssue(
             buildAnalysisOptions(
               issueVisionCandidates,
-              Math.min(analysisDeadlineMs, 60_000),
+              Math.min(budgets.analysisDeadlineMs, 60_000),
             ),
             ctx,
           );
@@ -722,7 +728,7 @@ async function main(): Promise<void> {
             "issue vision: vision model failed, falling back to text analysis",
           );
           const fallback = await analyzeIssue(
-            buildAnalysisOptions(issueCandidates, analysisDeadlineMs),
+            buildAnalysisOptions(issueCandidates, budgets.analysisDeadlineMs),
             { ...ctx, images: [] },
           );
           // 显示层标记：仅当文本分析产出有效结果时标注「视觉未参与」。
@@ -738,7 +744,9 @@ async function main(): Promise<void> {
       }
       // 深读（读仓+工具循环）单独给更大 deadline，避免大上下文多轮推理超时。
       const deadlineMs =
-        deep && shouldReadRepo ? deepAnalysisDeadlineMs : analysisDeadlineMs;
+        deep && shouldReadRepo
+          ? budgets.deepAnalysisDeadlineMs
+          : budgets.analysisDeadlineMs;
       return analyzeIssue(buildAnalysisOptions(issueCandidates, deadlineMs), ctx);
     },
 
@@ -954,6 +962,8 @@ async function main(): Promise<void> {
           spamCandidates.length > 0 ? spamCandidates : issueCandidates;
         if (candidates.length === 0) return null;
         const { payload, identity } = issueIdentity(task);
+        // issue #102：spam 检测同样用可配置预算（全局值，不按仓库覆盖）。
+        const budgets = await resolveAnalysisBudgets(null);
         const context = await buildIssueContext(
           github,
           {
@@ -969,8 +979,8 @@ async function main(): Promise<void> {
           {
             adapters,
             candidates,
-            deadlineMs: analysisDeadlineMs,
-            retryPolicy: analysisRetryPolicy,
+            deadlineMs: budgets.analysisDeadlineMs,
+            retryPolicy: budgets.retryPolicy,
             signal,
           },
           context,
@@ -1164,6 +1174,8 @@ async function main(): Promise<void> {
 
     review: async (context: PrReviewContext, signal) => {
       const renderedText = renderPrContextText(context.rendered);
+      // issue #102：审查时间预算可用 pr_review_deadline_seconds 在线调整。
+      const budget = await resolveReviewBudget();
       if (expertTeamEnabled) {
         return runExpertReview(
           {
@@ -1173,8 +1185,8 @@ async function main(): Promise<void> {
               expertReviewCandidates.length > 0
                 ? expertReviewCandidates
                 : reviewCandidates,
-            deadlineMs: reviewDeadlineMs,
-            retryPolicy: reviewRetryPolicy,
+            deadlineMs: budget.deadlineMs,
+            retryPolicy: budget.retryPolicy,
             signal,
           },
           {
@@ -1188,8 +1200,8 @@ async function main(): Promise<void> {
         {
           adapters,
           candidates: reviewCandidates,
-          deadlineMs: reviewDeadlineMs,
-          retryPolicy: reviewRetryPolicy,
+          deadlineMs: budget.deadlineMs,
+          retryPolicy: budget.retryPolicy,
           signal,
           ...(context.toolsContext
             ? { tools: { context: context.toolsContext } }
@@ -1290,25 +1302,15 @@ async function main(): Promise<void> {
       const cfg = await prReviewConfig();
       if (!cfg.checkRun) return;
       const { payload, identity } = prIdentity(task);
-      const githubClient = assertGithub(github);
-      const key = `check-run:${identity.owner}/${identity.name}#${payload.subjectNumber}:${payload.subjectRevision}`;
-      const existing = await publicationStore.findExternalObjectId(key);
-      if (existing !== null) return;
-      const run = await githubClient.createCheckRun({
+      await beginCheckRun({
+        db: database.db,
+        github: assertGithub(github),
+        taskId: task.id,
         installationId: payload.installationId,
         owner: identity.owner,
         name: identity.name,
-        headSha: payload.subjectRevision,
-        runName: "AperturePrism AI Review",
-        status: "in_progress",
-        title: "AI 代码审查进行中",
-        summary: "正在分析 PR 的变更与上下文，请稍候…",
-      });
-      await publicationStore.insert({
-        taskId: task.id,
-        idempotencyKey: key,
-        externalObjectId: String(run.id),
-        channel: "check_run",
+        pullNumber: payload.subjectNumber,
+        revision: payload.subjectRevision,
       });
     },
 
@@ -1317,7 +1319,12 @@ async function main(): Promise<void> {
       if (!cfg.checkRun) return;
       const { payload, identity } = prIdentity(task);
       const githubClient = assertGithub(github);
-      const key = `check-run:${identity.owner}/${identity.name}#${payload.subjectNumber}:${payload.subjectRevision}`;
+      const key = checkRunIdempotencyKey(
+        identity.owner,
+        identity.name,
+        payload.subjectNumber,
+        payload.subjectRevision,
+      );
       const runId = await publicationStore.findExternalObjectId(key);
       if (runId === null) return;
       const findings = review.findings.length;
@@ -1403,12 +1410,48 @@ async function main(): Promise<void> {
     return issueHandler(task, signal);
   };
 
+  // issue #103：PR 审核任务最终失败（重试耗尽）时，把 GitHub Check Run 从
+  // "进行中" 收尾为 failure。此前失败路径从不更新 Check Run，PR 检查区会
+  // 永远停在"AI 代码审查进行中"。best-effort：任何失败只记日志，不影响
+  // 任务终态，也不影响循环继续运转。
+  const finalizeCheckRunOnFinalFailure = async (
+    task: LeasedTask,
+    errorCategory: string,
+    errorMessage?: string,
+  ): Promise<void> => {
+    if (task.taskType !== "pr_review") return;
+    const cfg = await prReviewConfig();
+    if (!cfg.checkRun) return;
+    const { payload, identity } = prIdentity(task);
+    if (!github) return;
+    const key = checkRunIdempotencyKey(
+      identity.owner,
+      identity.name,
+      payload.subjectNumber,
+      payload.subjectRevision,
+    );
+    const runId = await publicationStore.findExternalObjectId(key);
+    if (runId === null) return; // 从未创建过 Check Run，无需收尾
+    const detail = (errorMessage ?? errorCategory).slice(0, 200);
+    await github.updateCheckRun({
+      installationId: payload.installationId,
+      owner: identity.owner,
+      name: identity.name,
+      checkRunId: Number(runId),
+      status: "completed",
+      conclusion: "failure",
+      title: "AI 审核失败",
+      summary: `审核未完成（${errorCategory}）：${detail}。修复后可在 WebUI 重新入队。`,
+    });
+  };
+
   await runWorkerLoop({
     engine,
     handler,
     heartbeatIntervalMs,
     idleDelayMs,
     shutdownSignal: shutdown.signal,
+    onFinalFailure: finalizeCheckRunOnFinalFailure,
     onEvent: (event) => {
       if (event.type === "idle") return;
       const taskLogger =
@@ -1559,6 +1602,87 @@ async function resolveIssueSettings(
       "repository settings read failed; using global settings",
     );
     return globals;
+  }
+}
+
+/**
+ * issue #102：把"秒"设置解析为毫秒预算。非法/越界值回退默认，钳制在
+ * 1min–60min 之间，防止手滑填 0 或 99999 把 worker 拖死。
+ */
+function parseDeadlineSeconds(raw: string | undefined, fallbackMs: number): number {
+  const MIN_MS = 60_000;
+  const MAX_MS = 3_600_000;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return fallbackMs;
+  return Math.min(MAX_MS, Math.max(MIN_MS, value * 1000));
+}
+
+/**
+ * issue #102：Issue 分析的时间预算与单候选重试次数，可在 WebUI 在线调整，
+ * 不必改代码重新部署。读取失败时退回模块默认值，不影响分析可用性。
+ */
+async function resolveAnalysisBudgets(repositoryFullName: string | null): Promise<{
+  analysisDeadlineMs: number;
+  deepAnalysisDeadlineMs: number;
+  retryPolicy: typeof analysisRetryPolicy;
+}> {
+  try {
+    const settings = await resolveIssueSettings(repositoryFullName, [
+      "issue_analysis_deadline_seconds",
+      "issue_deep_analysis_deadline_seconds",
+      "issue_analysis_candidate_attempts",
+    ]);
+    const attempts = Number(settings.get("issue_analysis_candidate_attempts"));
+    return {
+      analysisDeadlineMs: parseDeadlineSeconds(
+        settings.get("issue_analysis_deadline_seconds"),
+        analysisDeadlineMs,
+      ),
+      deepAnalysisDeadlineMs: parseDeadlineSeconds(
+        settings.get("issue_deep_analysis_deadline_seconds"),
+        deepAnalysisDeadlineMs,
+      ),
+      retryPolicy:
+        Number.isFinite(attempts) && attempts >= 1 && attempts <= 20
+          ? {
+              ...analysisRetryPolicy,
+              maxAttemptsPerCandidate: Math.floor(attempts),
+            }
+          : analysisRetryPolicy,
+    };
+  } catch (error) {
+    logger.warn(
+      { err: error, repo: repositoryFullName },
+      "analysis budget settings read failed; using defaults",
+    );
+    return {
+      analysisDeadlineMs,
+      deepAnalysisDeadlineMs,
+      retryPolicy: analysisRetryPolicy,
+    };
+  }
+}
+
+/**
+ * issue #102：PR 审查时间预算（全局设置 pr_review_deadline_seconds）。
+ * 读取失败时退回模块默认值。
+ */
+async function resolveReviewBudget(): Promise<{
+  deadlineMs: number;
+  retryPolicy: typeof reviewRetryPolicy;
+}> {
+  try {
+    const map = await loadSettings(database.db, ["pr_review_deadline_seconds"]);
+    return {
+      deadlineMs: parseDeadlineSeconds(
+        map.get("pr_review_deadline_seconds"),
+        reviewDeadlineMs,
+      ),
+      retryPolicy: reviewRetryPolicy,
+    };
+  } catch (error) {
+    logger.warn({ err: error }, "review budget settings read failed; using defaults");
+    return { deadlineMs: reviewDeadlineMs, retryPolicy: reviewRetryPolicy };
   }
 }
 
@@ -1938,7 +2062,7 @@ async function verifyProposedChangePaths(input: {
           "proposed change path not found; dropped before publish",
         );
       }
-    } catch (error) {
+    } catch {
       // 校验失败（网络/限流等）不误删，保留原建议。
       kept.push(change);
     }
