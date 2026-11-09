@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用文档与运维手册
+    url: https://github.com/BB0813/AperturePrism-AI-Review/blob/main/docs/RUNBOOK.md
+    about: 部署、配置、迁移、备份与常见问题排查
+  - name: 项目 README
+    url: https://github.com/BB0813/AperturePrism-AI-Review/blob/main/README.md
+    about: 功能说明、系统架构、配置参考与快速开始

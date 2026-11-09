@@ -1,0 +1,128 @@
+name: Bug 报告
+description: 报告一个可复现的缺陷或异常行为
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供可复现的信息，提交前先搜索现有 Issue，避免重复。
+        涉及密钥、Token、私有仓库地址的内容请先脱敏。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 发生了什么？涉及哪个页面、接口、机器人指令或分析流程？
+      placeholder: 例如：PR #123 的 Check Run 一直停在「AI 代码审查进行中」，但任务实际已失败。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 按顺序写清如何触发，越具体越好
+      placeholder: |
+        1. 打开 ...
+        2. 点击 / 调用 ...
+        3. 观察到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+      description: 你期望发生什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 实际发生了什么？可附错误信息、状态码或截图说明
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: 复现频率
+      options:
+        - 必现
+        - 高频（大于 50%）
+        - 偶发
+        - 仅出现一次，暂无法复现
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: 影响程度
+      options:
+        - 阻塞：核心功能不可用
+        - 严重：主要功能受损，存在临时绕过方式
+        - 一般：部分场景异常
+        - 轻微：体验或显示问题
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 项目版本
+      description: 可在 WebUI 概览页、关于页或根目录 package.json 查看
+      placeholder: 例如 v1.2.15
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 部署方式
+      options:
+        - Docker Compose
+        - 本地开发（npm run dev）
+        - NAS / 自建服务器
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 操作系统、Node 版本、数据库 / Redis 版本、浏览器版本等
+      placeholder: Windows 11 / Node 22.x / PostgreSQL 16 / Redis 7 / Chrome 130
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图 / 相关链接
+      description: 粘贴关键日志（注意脱敏）；UI 问题请附截图或录屏
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 补充信息
+      description: 最近是否升级、是否改过配置、是否只在特定仓库 / 模型 / Issue 上出现等
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已搜索现有 Issue，确认没有重复
+          required: true
+        - label: 已移除日志中的密钥、Token、私有仓库地址等敏感信息
+          required: true
