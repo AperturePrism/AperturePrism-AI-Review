@@ -23,7 +23,13 @@ export type TaskEngineOperations = {
     task: LeasedTask,
     errorCategory: string,
     errorMessage?: string,
-  ) => Promise<void>;
+  ) => Promise<FailOutcome | null>;
+};
+
+/** failTask 的结果：status=failed 表示重试已耗尽，任务进入终态。 */
+export type FailOutcome = {
+  status: "failed" | "retry_wait";
+  nextAttemptAt: Date | null;
 };
 
 export type TaskHandler = (
@@ -41,6 +47,18 @@ export type WorkerLoopOptions = {
   shutdownSignal: AbortSignal;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   onEvent?: (event: WorkerEvent) => void;
+  /**
+   * Called when an attempt failure drives the task into its terminal "failed"
+   * state (retries exhausted; issues #103). External side effects that must not
+   * outlive a dead task — e.g. finalizing a PR Check Run stuck at
+   * "in_progress" — belong here. Best-effort by contract: the loop swallows
+   * callback errors so cleanup can never mask the failure itself.
+   */
+  onFinalFailure?: (
+    task: LeasedTask,
+    errorCategory: string,
+    errorMessage?: string,
+  ) => Promise<void>;
 };
 
 export type WorkerEvent =
@@ -63,6 +81,26 @@ function describeError(error: unknown): string | undefined {
   }
   const text = String(error);
   return text.length > 500 ? `${text.slice(0, 500)}…` : text;
+}
+
+/**
+ * issue #103：任务重试耗尽进入终态 failed 时触发的收尾钩子。钩子自身的异常
+ * 一律吞掉——收尾失败不能掩盖真正的任务失败，也不该影响循环继续运转。
+ */
+async function notifyFinalFailure(
+  options: WorkerLoopOptions,
+  task: LeasedTask,
+  errorCategory: string,
+  failOutcome: FailOutcome | null,
+  errorMessage?: string,
+): Promise<void> {
+  if (!options.onFinalFailure || failOutcome?.status !== "failed") return;
+  // 吞掉钩子异常：收尾是 best-effort，失败不能掩盖任务本身的失败结果。
+  try {
+    await options.onFinalFailure(task, errorCategory, errorMessage);
+  } catch {
+    // best-effort cleanup only
+  }
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -144,7 +182,12 @@ export async function runOnce(options: WorkerLoopOptions): Promise<boolean> {
     }
 
     if (result.outcome === "failed") {
-      await engine.fail(task, result.errorCategory, result.errorMessage);
+      const failOutcome = await engine.fail(
+        task,
+        result.errorCategory,
+        result.errorMessage,
+      );
+      await notifyFinalFailure(options, task, result.errorCategory, failOutcome, result.errorMessage);
       onEvent?.({
         type: "failed",
         taskId: task.id,
@@ -177,7 +220,10 @@ export async function runOnce(options: WorkerLoopOptions): Promise<boolean> {
     const errorText = describeError(error);
     // 错误文本必须一并交给任务引擎：否则它只存在于进程日志里，
     // task_events 只剩分类码，事后无法判断失败原因。
-    if (!leaseLost) await engine.fail(task, errorCategory, errorText);
+    if (!leaseLost) {
+      const failOutcome = await engine.fail(task, errorCategory, errorText);
+      await notifyFinalFailure(options, task, errorCategory, failOutcome, errorText);
+    }
     onEvent?.({
       type: "failed",
       taskId: task.id,
