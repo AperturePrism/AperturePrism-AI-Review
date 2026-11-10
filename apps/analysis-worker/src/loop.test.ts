@@ -44,7 +44,7 @@ function engine(overrides: EngineOverrides = {}) {
     heartbeat: async () => true,
     beginPublishing: async () => true,
     complete: async () => true,
-    fail: async () => undefined,
+    fail: async () => null,
   };
   const merged = { ...base, ...overrides };
 
@@ -118,6 +118,7 @@ describe("worker task processing", () => {
     const target = engine({
       fail: async (_task, category) => {
         failures.push(category);
+        return { status: "failed", nextAttemptAt: null };
       },
     });
 
@@ -143,6 +144,7 @@ describe("worker task processing", () => {
       fail: async (_task, category, message) => {
         failures.push(category);
         messages.push(message);
+        return { status: "retry_wait", nextAttemptAt: null };
       },
     });
 
@@ -166,6 +168,7 @@ describe("worker task processing", () => {
     const target = engine({
       fail: async (_task, _category, message) => {
         messages.push(message);
+        return { status: "retry_wait", nextAttemptAt: null };
       },
     });
 
@@ -182,6 +185,67 @@ describe("worker task processing", () => {
     });
 
     expect(messages).toEqual(["summary: 缺少必填字段"]);
+  });
+
+  it("runs onFinalFailure only when retries are exhausted (issue #103)", async () => {
+    const finalized: string[] = [];
+    const { onEvent } = collector();
+
+    // 重试未耗尽（retry_wait）：不触发收尾。
+    const retrying = engine({
+      fail: async () => ({ status: "retry_wait", nextAttemptAt: null }),
+    });
+    await runOnce({
+      engine: retrying.operations,
+      handler: async () => ({ outcome: "failed", errorCategory: "handler_error" }),
+      heartbeatIntervalMs: 60_000,
+      idleDelayMs: 0,
+      shutdownSignal: neverAbort,
+      onEvent,
+      onFinalFailure: async (task, category) => {
+        finalized.push(`${task.id}:${category}`);
+      },
+    });
+    expect(finalized).toEqual([]);
+
+    // 重试耗尽（failed 终态）：触发收尾。
+    const exhausted = engine({
+      fail: async () => ({ status: "failed", nextAttemptAt: null }),
+    });
+    await runOnce({
+      engine: exhausted.operations,
+      handler: async () => ({ outcome: "failed", errorCategory: "invalid_output" }),
+      heartbeatIntervalMs: 60_000,
+      idleDelayMs: 0,
+      shutdownSignal: neverAbort,
+      onEvent,
+      onFinalFailure: async (task, category) => {
+        finalized.push(`${task.id}:${category}`);
+      },
+    });
+    expect(finalized).toEqual(["task-1:invalid_output"]);
+  });
+
+  it("swallows onFinalFailure errors so cleanup never masks the failure", async () => {
+    const target = engine({
+      fail: async () => ({ status: "failed", nextAttemptAt: null }),
+    });
+    const { events, onEvent } = collector();
+
+    const worked = await runOnce({
+      engine: target.operations,
+      handler: async () => ({ outcome: "failed", errorCategory: "handler_error" }),
+      heartbeatIntervalMs: 60_000,
+      idleDelayMs: 0,
+      shutdownSignal: neverAbort,
+      onEvent,
+      onFinalFailure: async () => {
+        throw new Error("cleanup boom");
+      },
+    });
+
+    expect(worked).toBe(true);
+    expect(events.some((event) => event.type === "failed")).toBe(true);
   });
 });
 
@@ -259,6 +323,7 @@ describe("worker graceful shutdown", () => {
     const target = engine({
       fail: async (_task, category) => {
         failures.push(category);
+        return { status: "retry_wait", nextAttemptAt: null };
       },
     });
 
