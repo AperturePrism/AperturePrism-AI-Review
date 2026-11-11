@@ -7,7 +7,7 @@ import type { Finding, FindingSeverity } from "./types.js";
  */
 export const MAX_SEPARATION_LINES = 12;
 
-/** Findings at or below this confidence are treated as unsupported style nits. */
+/** Findings below this confidence are not published, regardless of rule. */
 export const MIN_CONFIDENCE_PUBLISH = 0.5;
 
 /** Low-severity style opinions are not published on the board by default. */
@@ -52,14 +52,14 @@ export function dedupeFindings(findings: readonly Finding[]): Finding[] {
 }
 
 /**
- * Whether a finding should be shown as an inline/board comment. Low severity
- * or low confidence style opinions are ignored here; expensive, low-value
- * comments are exactly what the plan says to hold back.
+ * Low/info meaningless changes are actionable cleanup, not style nits. They
+ * retain the confidence requirement without inflating their severity.
  */
 export function shouldPublishFinding(finding: Finding): boolean {
   return (
     finding.confidence >= MIN_CONFIDENCE_PUBLISH &&
-    severityWeight(finding.severity) >= severityWeight(MIN_PUBLISH_SEVERITY)
+    (finding.rule === "meaningless-change" ||
+      severityWeight(finding.severity) >= severityWeight(MIN_PUBLISH_SEVERITY))
   );
 }
 

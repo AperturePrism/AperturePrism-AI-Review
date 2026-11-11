@@ -59,6 +59,39 @@ describe("shouldPublishFinding", () => {
       shouldPublishFinding(finding({ severity: "high", confidence: 0.3 })),
     ).toBe(false);
   });
+
+  it.each(["low", "info"] as const)(
+    "publishes %s meaningless changes without lowering the confidence threshold",
+    (severity) => {
+      expect(
+        shouldPublishFinding(
+          finding({ rule: "meaningless-change", severity, confidence: 0.9 }),
+        ),
+      ).toBe(true);
+      expect(
+        shouldPublishFinding(
+          finding({ rule: "meaningless-change", severity, confidence: 0.5 }),
+        ),
+      ).toBe(true);
+      expect(
+        shouldPublishFinding(
+          finding({ rule: "meaningless-change", severity, confidence: 0.49 }),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it.each([
+    "style-naming",
+    "meaningless-change-other",
+    "other-meaningless-change",
+  ])("does not exempt %s from the severity threshold", (rule) => {
+    for (const severity of ["low", "info"] as const) {
+      expect(
+        shouldPublishFinding(finding({ rule, severity, confidence: 1 })),
+      ).toBe(false);
+    }
+  });
 });
 
 describe("applySeverityRules", () => {
@@ -72,7 +105,11 @@ describe("applySeverityRules", () => {
     ).toBe("medium");
     expect(
       applySeverityRules(
-        finding({ severity: "high", afterLine: 10, evidence: "real diff text" }),
+        finding({
+          severity: "high",
+          afterLine: 10,
+          evidence: "real diff text",
+        }),
       ).severity,
     ).toBe("high");
   });
