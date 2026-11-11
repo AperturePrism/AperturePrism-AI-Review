@@ -55,6 +55,36 @@ describe("validatePrReview", () => {
     expect(result.review.findings[0]!.rule).toBe("missing-null-check");
   });
 
+  it.each(["low", "info"] as const)(
+    "retains %s meaningless changes through JSON parsing and policy filtering",
+    (severity) => {
+      const meaninglessChange = {
+        ...valid.findings[0],
+        rule: "meaningless-change",
+        severity,
+        confidence: 0.5,
+      };
+      const result = parsePrReviewJson(
+        JSON.stringify({
+          ...valid,
+          overallTone: "comment",
+          findings: [
+            meaninglessChange,
+            { ...meaninglessChange, confidence: 0.9, afterLine: 5 },
+            { ...meaninglessChange, confidence: 0.49, file: "src/other.ts" },
+            { ...meaninglessChange, rule: "style-naming", confidence: 1 },
+          ],
+        }),
+      );
+      expect(result.outcome).toBe("valid");
+      if (result.outcome !== "valid") return;
+      expect(result.review.findings).toEqual([
+        { ...meaninglessChange, confidence: 0.9, afterLine: 5 },
+      ]);
+      expect(result.review.overallTone).toBe("comment");
+    },
+  );
+
   it("rejects non-conforming output with structured issues", () => {
     const result = validatePrReview({ contractVersion: "bogus" });
     expect(result.outcome).toBe("invalid");

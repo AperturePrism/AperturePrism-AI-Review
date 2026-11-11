@@ -105,6 +105,7 @@ import {
   startTask,
 } from "../../../packages/task-engine/src/index.js";
 import { beginCheckRun, checkRunIdempotencyKey } from "./check-run.js";
+import { fetchExternalRepoRulesText } from "./external-repo-rules.js";
 import { createIssueAnalysisHandler } from "./handler.js";
 import { createPrReviewHandler } from "./pr-review-handler.js";
 import {
@@ -302,6 +303,9 @@ async function repoRulesEnabled(repositoryFullName: string | null): Promise<bool
  * 读取仓库审核规则文本：开关关闭时返回 undefined；开启时先读 `.apertureprism/rules/`
  * 目录，目录不存在则自动创建示例规则文件（best-effort，创建失败不阻断分析）。
  * 目录已有时直接读取真实规则并返回合并文本。
+ *
+ * issue #107：若配置了 `repo_rules_url`（指向规则文本的外部 http(s) 链接），
+ * 会抓取该链接内容并与本地规则合并注入；本地目录与外部链接至少有一份即可生效。
  */
 async function loadRepoRules(
   github: ReturnType<typeof createGitHubClient>,
@@ -325,7 +329,19 @@ async function loadRepoRules(
     },
     signal,
   );
+  const externalRules = await fetchExternalRepoRules(repoFullName, signal);
+  if (rules !== undefined && externalRules !== undefined) {
+    return joinRepoRulesSections(rules, externalRules);
+  }
   if (rules !== undefined) return rules;
+  if (externalRules !== undefined) {
+    // 本地目录还没有规则但外部链接有：直接用外部规则；示例文件仍照常播种，
+    // 供维护者参考本地规则的组织方式。
+    logger.info(
+      { repo: repoFullName },
+      "repo rules loaded from external URL; local rules dir empty",
+    );
+  }
   // 首次分析：目录不存在 → 自动创建示例规则文件，供维护者参考。
   try {
     const seeded = await ensureRepoRulesDir(github, {
@@ -338,10 +354,53 @@ async function loadRepoRules(
         { repo: repoFullName, file: EXAMPLE_RULES_FILE },
         "seeded example review rules on first analysis",
       );
-  } catch (error) {
-    logger.warn({ err: error, repo: repoFullName }, "seed rules directory skipped");
+  } catch {
+    logger.warn({ repo: repoFullName }, "seed rules directory skipped");
   }
-  return undefined;
+  return externalRules;
+}
+
+/** 外部规则段落的标题与衔接文案（issue #107）。 */
+function joinRepoRulesSections(local: string, external: string): string {
+  return `${local}\n\n## 外部链接审核规则（repo_rules_url 抓取，与目录规则同等效力）\n${external}`;
+}
+
+/**
+ * issue #107：抓取 `repo_rules_url` 指向的外部审核规则文本。
+ * 未配置 / 非公网 http(s) 链接 / 抓取失败时返回 undefined，不阻断分析（fail-open）。
+ * 流式读取上限 256KB，超长截断；含 DNS 与重定向的总超时 15 秒；仅接受文本响应。
+ */
+async function fetchExternalRepoRules(
+  repoFullName: string,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  let url = "";
+  try {
+    const settings = await resolveIssueSettings(repoFullName, ["repo_rules_url"]);
+    url = String(settings.get("repo_rules_url") ?? "").trim();
+  } catch (error) {
+    logger.warn(
+      { err: error, repo: repoFullName },
+      "external repo rules: settings read failed; skipping",
+    );
+    return undefined;
+  }
+  if (!/^https?:\/\/\S+$/i.test(url)) return undefined;
+  try {
+    const text = await fetchExternalRepoRulesText(url, signal);
+    if (text === undefined) return undefined;
+    logger.info(
+      { repo: repoFullName, chars: text.length },
+      "external repo rules: fetched",
+    );
+    return text;
+  } catch (error) {
+    logger.warn(
+      { err: error, repo: repoFullName },
+      "external repo rules: fetch failed; skipping",
+    );
+    return undefined;
+  }
 }
 
 const publicationStore: PublicationStore = {

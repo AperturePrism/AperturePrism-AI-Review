@@ -164,6 +164,17 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
     hint: "开启后读取仓库 .apertureprism/rules/ 目录下的规则文件并注入 Issue/PR 分析；仓库首次分析时若目录不存在会自动创建示例规则文件。可在此设全局默认，也可在「已安装仓库」页按仓库单独覆盖",
   },
   {
+    key: "repo_rules_url",
+    group: "issue",
+    kind: "string",
+    secret: false,
+    repoScoped: true,
+    envVar: null,
+    hotReload: "poll",
+    label: "外部审核规则链接",
+    hint: "可选（issue #107）。填写指向审核规则文本（Markdown / 纯文本）的 http(s) 链接，分析时会抓取并与 .apertureprism/rules/ 目录的规则合并注入 Issue/PR 分析；适合规则跨仓库复用或外部托管的场景。留空则只用仓库内规则目录",
+  },
+  {
     key: "spam_handling",
     group: "issue",
     kind: "enum",

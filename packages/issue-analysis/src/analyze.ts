@@ -426,7 +426,8 @@ export async function analyzeIssue(
         tools: builtinTools(),
         exploreInstruction:
           "你可以调用 read_file / list_directory / get_git_info 查看仓库源码，" +
-          "以定位这个 Issue 描述的问题出在哪个文件。请先定位再作答：\n" +
+          "以定位这个 Issue 涉及的真实代码位置（缺陷类：问题出在哪个文件；" +
+          "功能请求 / enhancement 类：相关功能现状在哪个文件、改动应落在哪）。请先定位再作答：\n" +
           "- 第一步必须用 list_directory 且 path 传空字符串 \"\" 查看仓库根目录，" +
           "再据结果用相对路径进子目录；绝对路径与 /home/user/repos/... 这类仓库名/用户目录前缀一律无效，不要编造。\n" +
           "- 优先读 README 等文档，理解该功能 / 命令 / 指令的正确使用与触发方式，" +
@@ -434,6 +435,8 @@ export async function analyzeIssue(
           "- 如果用户点名要求检查某个文件或代码（如「检查 main.py 的 bug」），必须当场" +
           "用 read_file 读取该文件（连同其依赖/同目录文件），逐条找出真实代码错误并回报，" +
           "不要只做成建议步骤或反问更多信息。\n" +
+          "- 功能请求 / enhancement 类 Issue 同样必须先读仓：读相关实现与配置，" +
+          "让 proposedChanges 落到真实文件与位置上，不要输出「未读取源码，路径待确认」占位。\n" +
           "proposedChanges 里的 path 必须是你确实读到过的真实文件；找不到相关代码时省略该字段并说明原因，不要凭猜测编造路径或行号。",
         ...(options.tools.maxRounds === undefined
           ? {}
