@@ -344,7 +344,8 @@ body.no-scroll::after { content: ""; position: fixed; inset: 0; background: rgba
 .quick__block { padding: 24px 26px; border-radius: var(--radius); border: 1px solid var(--border); background: rgba(255, 255, 255, 0.02); }
 .quick__title { font-size: 16px; margin-bottom: 14px; color: var(--text); }
 .quick__title::before { content: "▸ "; color: var(--prism-2); }
-.quick__hint { color: var(--faint); font-size: 13px; }
+.quick__hint { color: var(--faint); font-size: 13px; margin-top: 12px; }
+.quick__hint code { font-family: var(--font-mono); color: var(--muted); word-break: break-all; }
 
 .code {
   position: relative; display: flex; align-items: center; gap: 14px;

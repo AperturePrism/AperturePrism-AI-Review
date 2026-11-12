@@ -91,7 +91,7 @@ const head = `<!DOCTYPE html>
   <link rel="preload" href="assets/fonts/cabinet-800.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist-mono.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="assets/style.css?v=13" />
+  <link rel="stylesheet" href="assets/style.css?v=14" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到正文</a>
@@ -130,6 +130,7 @@ const head = `<!DOCTYPE html>
       <a href="#timeline">更新日志</a>
       <a href="architecture.html">架构</a>
       <a href="https://github.com/AperturePrism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub ↗</a>
+      <a href="https://cnb.cool/Apertureprism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">国内仓库 · CNB ↗</a>
     </nav>
   </div>
 
@@ -198,12 +199,13 @@ const foot = `      </div>
         <a href="architecture.html">架构与流程 ↗</a>
         <a href="index.html#quickstart">快速开始</a>
         <a href="index.html#console">控制台</a>
+        <a href="https://cnb.cool/Apertureprism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">国内仓库 · CNB ↗</a>
       </div>
       <p class="footer__copy mono">APERTUREPRISM © <span id="year"></span> · 开源 · MIT License</p>
     </div>
   </footer>
 
-  <script src="assets/app.js?v=13"></script>
+  <script src="assets/app.js?v=14"></script>
 </body>
 </html>
 `;

@@ -4,6 +4,9 @@
 # 用法：
 #   # 直跑（拉取最新 main 源码到本地目录再安装）：
 #   curl -fsSL https://raw.githubusercontent.com/AperturePrism/AperturePrism-AI-Review/main/scripts/bootstrap.sh | bash
+#   # 国内网络：先 clone 国内仓库再本地执行（GitHub 拉取失败时会自动回退 CNB）：
+#   git clone https://cnb.cool/Apertureprism/AperturePrism-AI-Review.git && cd AperturePrism-AI-Review
+#   ./scripts/bootstrap.sh
 #   # 传参（例如跳过容器/跳过构建）：
 #   curl -fsSL .../scripts/bootstrap.sh | bash -s -- --skip-docker
 #   # 本地已检出仓库时直接调用本文件，等价于执行 ./scripts/install.sh：
@@ -11,11 +14,13 @@
 #
 # 环境变量覆盖：
 #   APERTUREPRISM_REPO_URL  仓库地址（默认 https://github.com/AperturePrism/AperturePrism-AI-Review.git）
+#   APERTUREPRISM_REPO_URL_CNB  国内备用仓库（默认 https://cnb.cool/Apertureprism/AperturePrism-AI-Review.git）
 #   APERTUREPRISM_REF       分支或标签（默认 main）
 #   APERTUREPRISM_SRC_DIR   本地安装源码目录（默认 $HOME/.apertureprism/AperturePrism-AI-Review）
 set -euo pipefail
 
 REPO_URL="${APERTUREPRISM_REPO_URL:-https://github.com/AperturePrism/AperturePrism-AI-Review.git}"
+REPO_URL_CNB="${APERTUREPRISM_REPO_URL_CNB:-https://cnb.cool/Apertureprism/AperturePrism-AI-Review.git}"
 REF="${APERTUREPRISM_REF:-main}"
 SRC_DIR="${APERTUREPRISM_SRC_DIR:-$HOME/.apertureprism/AperturePrism-AI-Review}"
 
@@ -51,8 +56,21 @@ acquire() {
   mkdir -p "$parent"
   rm -rf "$SRC_DIR.tmp"
   if command -v git >/dev/null 2>&1; then
-    git clone --depth 1 --branch "$REF" "$REPO_URL" "$SRC_DIR.tmp" \
-      || { rm -rf "$SRC_DIR.tmp"; return 1; }
+    # GitHub 在国内网络常不可达：主源失败后自动回退 CNB 国内仓库。
+    # GIT_TERMINAL_PROMPT=0 避免无 TTY 时卡在凭据提示上。
+    local url
+    local -a sources=("$REPO_URL")
+    [[ -n "$REPO_URL_CNB" && "$REPO_URL_CNB" != "$REPO_URL" ]] && sources+=("$REPO_URL_CNB")
+    local ok=0
+    for url in "${sources[@]}"; do
+      if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$url" "$SRC_DIR.tmp"; then
+        ok=1
+        break
+      fi
+      rm -rf "$SRC_DIR.tmp"
+      echo "[WARN] 从 $url 拉取失败，切换下一个源" >&2
+    done
+    [[ "$ok" -eq 1 ]] || return 1
   else
     # 无 git 时回退到 codeload tarball（REF 需为分支名）。
     local archive

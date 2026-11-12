@@ -14,7 +14,7 @@
   <link rel="preload" href="assets/fonts/cabinet-800.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="assets/fonts/geist-mono.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="assets/style.css?v=13" />
+  <link rel="stylesheet" href="assets/style.css?v=14" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到正文</a>
@@ -53,6 +53,7 @@
       <a href="changelog.html">更新日志</a>
       <a href="architecture.html">架构</a>
       <a href="https://github.com/AperturePrism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub ↗</a>
+      <a href="https://cnb.cool/Apertureprism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">国内仓库 · CNB ↗</a>
     </nav>
   </div>
 
@@ -109,6 +110,8 @@
           <h3>方式 A · 一键安装（推荐）</h3>
           <p>支持<strong>源码安装</strong>与 <strong>Docker Compose 全栈安装</strong>二选一（交互选择，或 <code>--mode</code> 指定）。可直接从 GitHub 直跑，无需先 clone：</p>
           <div class="code" data-cmd>curl -fsSL https://raw.githubusercontent.com/AperturePrism/AperturePrism-AI-Review/main/scripts/bootstrap.sh | bash</div>
+          <p>国内网络访问 <code>raw.githubusercontent.com</code> 常被阻断，改用国内仓库（CNB）源码安装：</p>
+          <div class="code" data-cmd>git clone https://cnb.cool/Apertureprism/AperturePrism-AI-Review.git &amp;&amp; cd AperturePrism-AI-Review &amp;&amp; ./scripts/bootstrap.sh</div>
           <p>常用参数：</p>
           <ul>
             <li><code>--mode=source|compose</code>：指定安装方式（1=源码，2=Docker 全栈）。</li>
@@ -117,7 +120,7 @@
             <li><code>--skip-docker</code> / <code>--skip-deps</code> / <code>--skip-migrate</code>：跳过对应步骤。</li>
             <li><code>--verify</code>：Docker 地址池耗尽场景下叠加 <code>compose.verify.yml</code>（见第十节）。</li>
           </ul>
-          <p>环境变量覆盖：<code>APERTUREPRISM_SRC_DIR</code>（源码目录）、<code>APERTUREPRISM_REF</code>（分支/标签）、<code>APERTUREPRISM_REPO_URL</code>（仓库地址）、<code>APERTUREPRISM_AUTO_INSTALL=1</code>。</p>
+          <p>环境变量覆盖：<code>APERTUREPRISM_SRC_DIR</code>（源码目录）、<code>APERTUREPRISM_REF</code>（分支/标签）、<code>APERTUREPRISM_REPO_URL</code>（仓库地址，国内可用 <code>https://cnb.cool/Apertureprism/AperturePrism-AI-Review.git</code>）、<code>APERTUREPRISM_AUTO_INSTALL=1</code>。</p>
 
           <h3>方式 B · 本地开发（分步）</h3>
           <div class="code" data-cmd>npm install && npm run build && node scripts/migrate.mjs</div>
@@ -329,7 +332,7 @@ docker compose --env-file .env.production \
         </section>
 
         <div class="gsec__end">
-          <p>还没覆盖到你的场景？到 <a href="https://github.com/AperturePrism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> 提 Issue。</p>
+          <p>还没覆盖到你的场景？到 <a href="https://github.com/AperturePrism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> 或 <a href="https://cnb.cool/Apertureprism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">国内仓库（CNB）↗</a> 提 Issue。</p>
         </div>
       </article>
     </div>
@@ -352,12 +355,13 @@ docker compose --env-file .env.production \
         <a href="index.html#console">控制台</a>
         <a href="changelog.html">更新日志 ↗</a>
         <a href="architecture.html">架构与流程 ↗</a>
+        <a href="https://cnb.cool/Apertureprism/AperturePrism-AI-Review" target="_blank" rel="noreferrer">国内仓库 · CNB ↗</a>
       </div>
       <p class="footer__copy mono">APERTUREPRISM © <span id="year"></span> · 开源 · MIT License</p>
     </div>
   </footer>
 
-  <script src="assets/app.js?v=13"></script>
+  <script src="assets/app.js?v=14"></script>
   <script>
     /* guide 目录：滚动高亮当前小节（scrollspy） */
     (function () {
