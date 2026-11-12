@@ -1,0 +1,30 @@
+# CNB 云原生构建：为 v* 标签构建 8 个服务镜像并推送到 CNB 制品库。
+#
+# 双源分工：
+#   - GitHub Actions（.github/workflows/docker-publish.yml）→ GHCR，海外源 / GitHub Release。
+#   - 本文件 → docker.cnb.cool，国内源（NAS 部署使用）。
+# 两边使用同一个 docker/Dockerfile、同一组 target 与同一个 tag，保证镜像内容一致。
+#
+# 触发：tag push（v*）。镜像地址：
+#   docker.cnb.cool/apertureprism/apertureprism-ai-review/<svc>:<tag>
+v*:
+  tag_push:
+    - name: build-and-push
+      services:
+        - docker
+      stages:
+        - name: build and push images
+          script: |
+            set -euo pipefail
+            TAG="${CNB_BRANCH}"
+            REGISTRY="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
+            echo "tag=${TAG} registry=${REGISTRY}"
+            for svc in api analysis-worker index-worker scheduler scan-worker qq-bot migrate web; do
+              echo "== build ${svc}:${TAG} =="
+              docker build \
+                --target "${svc}" \
+                -f docker/Dockerfile \
+                -t "${REGISTRY}/${svc}:${TAG}" \
+                .
+              docker push "${REGISTRY}/${svc}:${TAG}"
+            done
