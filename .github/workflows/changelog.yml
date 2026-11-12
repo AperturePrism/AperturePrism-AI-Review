@@ -31,6 +31,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # release 事件默认 checkout 到 tag 的 detached HEAD，后续 git push 会报
+          # "You are not currently on a branch"；固定到 main 保证能提交回主干。
+          ref: main
           fetch-depth: 0
 
       - name: Setup Node
@@ -50,7 +53,7 @@ jobs:
           git add website/changelog.html
           if ! git diff --cached --quiet; then
             git commit -m "chore: 自动更新官网更新日志页（$(date -u +%Y-%m-%d)）"
-            git push
+            git push origin HEAD:main
           else
             echo "changelog 无变化，跳过提交"
           fi
