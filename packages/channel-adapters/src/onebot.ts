@@ -9,9 +9,10 @@ const protocol: ChannelProtocol = "onebot11";
 const messageIdPrefix = `ob11`;
 
 function numberString(value: unknown): number | null {
-  return typeof value === "number" || typeof value === "string"
-    ? Number(value)
-    : null;
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !/^-?\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
