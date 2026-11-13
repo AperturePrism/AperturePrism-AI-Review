@@ -424,6 +424,8 @@ export type SettingItem = {
   /** `restart` 表示改完必须重启对应容器（目前只有 QQ 相关项）。 */
   hotReload: "poll" | "restart";
   options?: string[];
+  multiline?: boolean;
+  maxLength?: number;
   source: SettingSource;
   /** 当前生效值；secret 一律为掩码。 */
   value: string;
