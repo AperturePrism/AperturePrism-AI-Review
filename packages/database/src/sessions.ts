@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNotNull, isNull, lt, ne, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, lte, ne, or } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as schema from "./schema.js";
 import { hashToken } from "./password.js";
@@ -75,7 +75,7 @@ export async function findValidSession(
   const row = rows[0];
   if (!row) return null;
   if (row.revokedAt) return null;
-  if (row.expiresAt.getTime() < now.getTime()) return null;
+  if (row.expiresAt.getTime() <= now.getTime()) return null;
   return row;
 }
 
@@ -202,7 +202,7 @@ export async function pruneSessions(
     .delete(schema.userSessions)
     .where(
       or(
-        lt(schema.userSessions.expiresAt, now),
+        lte(schema.userSessions.expiresAt, now),
         // 已显式撤销的会话也清理（保留期限由调用方通过 now 控制）。
         isNotNull(schema.userSessions.revokedAt),
       ),
