@@ -16,7 +16,13 @@ export const evidenceKinds = [
 export const evidenceSchema = z.object({
   kind: z.enum(evidenceKinds),
   /** Verbatim excerpt from the issue, so reviewers can verify the claim. */
-  excerpt: z.string().min(1).max(2_000),
+  excerpt: z
+    .string()
+    .min(1)
+    .max(2_000)
+    .refine((value) => value.trim().length > 0, {
+      message: "evidence excerpt must contain non-whitespace text",
+    }),
 });
 
 export const issueCategories = [
