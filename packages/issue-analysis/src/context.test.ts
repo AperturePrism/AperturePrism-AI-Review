@@ -139,3 +139,18 @@ describe("issue context builder", () => {
     expect(estimateTokens("abcdefghi")).toBe(3);
   });
 });
+
+describe("zero issue comment budget", () => {
+  it("excludes every comment when maxComments is zero", async () => {
+    const context = await buildIssueContext(
+      fakeGithub(smallIssue, [comment(1, "oldest"), comment(2, "newest")]),
+      { installationId: "42", owner: "o", name: "r", number: 7 },
+      { maxTokens: 1_000, maxBodyChars: 80, maxComments: 0 },
+    );
+    expect(context.comments).toEqual([]);
+    expect(context.issue.body).toBe(smallIssue.body);
+    expect(context.estimatedTokens).toBe(
+      estimateTokens(smallIssue.title) + estimateTokens(smallIssue.body),
+    );
+  });
+});
