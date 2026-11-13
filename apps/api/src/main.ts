@@ -6256,7 +6256,7 @@ async function handleRequest(
       );
       return;
     }
-    await handleUpdateStatus(response, requestId);
+    await handleUpdateStatus(response, requestId, database.db);
     return;
   }
 

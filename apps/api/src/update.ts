@@ -2,10 +2,18 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { eq } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as schema from "../../../packages/database/src/schema.js";
 import { serializeSseEvent } from "../../../packages/event-stream/src/index.js";
+import {
+  finishUpdate,
+  normalizeUpdateVersion,
+  readUpdateHistory,
+  reserveUpdate,
+  type UpdateHistoryEntry,
+} from "./update-history.js";
+
+export type { UpdateHistoryEntry } from "./update-history.js";
 
 /* ---------- GitHub Container Registry version check ----------
    Public images can be queried anonymously via the Docker Registry HTTP API:
@@ -31,47 +39,39 @@ const UPDATE_SERVICES = [
   "migrate",
   "qq-bot",
 ] as const;
-const TARGET_PATTERN = /^v?\d+\.\d+\.\d+$|^latest$|^stable$/;
-const HISTORY_SETTING_KEY = "update_history";
-
-export type UpdateHistoryEntry = {
-  at: string;
-  from: string;
-  to: string;
-  ok: boolean;
-  reason?: string;
-};
-
 export function isValidUpdateTarget(target: string): boolean {
-  return TARGET_PATTERN.test(target);
+  return target === "latest" || target === "stable" || normalizeUpdateVersion(target) !== null;
 }
 
 let cachedPackageVersion: string | null = null;
+// Durable history survives restart; this guard also protects a still-live local
+// child if a read expires its running entry without cancelling the script.
+let updateRunning = false;
 
-/**
- * In-image version fallback: reads the root package.json version once so the
- * UI can always show a real version, even when compose does not inject
- * IMAGE_TAG / UPDATE_VERSION.
- */
+/** The root package is baked into the running image; compose env can be stale. */
 function packageVersion(): string {
-  if (cachedPackageVersion) return cachedPackageVersion;
+  if (cachedPackageVersion !== null) return cachedPackageVersion;
   try {
     const pkg = JSON.parse(
       readFileSync(resolve(process.cwd(), "package.json"), "utf8"),
-    ) as { version?: string };
-    cachedPackageVersion = pkg.version ? `v${pkg.version}` : "unknown";
+    ) as { version?: unknown };
+    const version = typeof pkg.version === "string" ? normalizeUpdateVersion(pkg.version) : null;
+    cachedPackageVersion = version === null ? "unknown" : `v${version}`;
   } catch {
     cachedPackageVersion = "unknown";
   }
   return cachedPackageVersion;
 }
 
-/** Current running version, injected by compose as IMAGE_TAG / UPDATE_VERSION. */
+/** Env is only a display fallback, never runtime-confirmation evidence. */
 export function currentVersion(): string {
-  const value = process.env.UPDATE_VERSION ?? process.env.IMAGE_TAG ?? "";
-  const trimmed = value.trim();
-  if (trimmed.length > 0 && trimmed !== "latest") return trimmed;
-  return packageVersion();
+  const baked = packageVersion();
+  if (baked !== "unknown") return baked;
+  for (const value of [process.env.UPDATE_VERSION, process.env.IMAGE_TAG]) {
+    const trimmed = value?.trim() ?? "";
+    if (normalizeUpdateVersion(trimmed) !== null) return trimmed;
+  }
+  return "unknown";
 }
 
 async function registryToken(host: string, service: string): Promise<string> {
@@ -112,12 +112,12 @@ async function registryTags(
     // 分页指针：Link: <...?last=<tag>>; rel="next"
     const link = response.headers.get("link") ?? "";
     const m = link.match(/[?&]last=[^&>;]+/i);
-    if (!m) break;
+    if (!m) return tags;
     const nextLast = decodeURIComponent(m[0].replace(/^[?&]last=/, ""));
-    if (!nextLast || nextLast === last) break;
+    if (!nextLast || nextLast === last) throw new Error("registry pagination did not advance");
     last = nextLast;
   }
-  return tags;
+  throw new Error("registry tag pagination exceeded limit");
 }
 
 async function registryDigest(
@@ -157,14 +157,25 @@ async function reachableHost(): Promise<string> {
 }
 
 function compareVersion(a: string, b: string): number {
-  const pa = a.replace(/^v/, "").split(".").map(Number);
-  const pb = b.replace(/^v/, "").split(".").map(Number);
+  const pa = a.replace(/^v/, "").split(".").map(BigInt);
+  const pb = b.replace(/^v/, "").split(".").map(BigInt);
   for (let i = 0; i < 3; i += 1) {
-    const da = pa[i] ?? 0;
-    const db = pb[i] ?? 0;
-    if (da !== db) return da - db;
+    const da = pa[i] ?? 0n;
+    const db = pb[i] ?? 0n;
+    if (da !== db) return da > db ? 1 : -1;
   }
   return 0;
+}
+
+/** Channels must be pinned from the primary registry, never mirror/cache data. */
+async function resolveUpdateTarget(target: string): Promise<string> {
+  if (target !== "latest" && target !== "stable") return target;
+  const tags = await registryTags(REGISTRY_HOST, "api");
+  const latest = tags
+    .filter((tag) => normalizeUpdateVersion(tag) !== null)
+    .sort((a, b) => compareVersion(b, a))[0];
+  if (!latest) throw new Error("No authoritative semver update target");
+  return latest;
 }
 
 /** Sorted distinct semver tags (vX.Y.Z) across the main services, newest first. */
@@ -173,7 +184,7 @@ async function fetchLatestTags(host: string): Promise<string[]> {
   for (const service of UPDATE_SERVICES) {
     try {
       for (const tag of await registryTags(host, service)) {
-        if (/^v?\d+\.\d+\.\d+$/.test(tag)) seen.add(tag);
+        if (normalizeUpdateVersion(tag) !== null) seen.add(tag);
       }
     } catch {
       // one service failing should not fail the whole check
@@ -186,57 +197,62 @@ async function fetchLatestTags(host: string): Promise<string[]> {
 export async function handleUpdateStatus(
   response: ServerResponse,
   requestId: string,
+  db: PostgresJsDatabase<typeof schema>,
 ): Promise<void> {
   const current = currentVersion();
+  let inProgress: boolean;
   try {
-    // ghcr.io 直连超时时自动落到镜像站（9.5），而不是把「未知」甩给用户。
-  const host = await reachableHost();
-  // 只有 ghcr.io 才视作权威、最新的 tag 来源；镜像站元数据可能滞后，若
-  // 被迫落到镜像站要把“来源/是否滞后”一并透出，避免把旧 tag 当“最新”。
-  const primary = host === REGISTRY_HOST;
-  const tags = await fetchLatestTags(host);
-  const latestTag = tags[0];
-  const latestDigest = latestTag ? await registryDigest(host, "web", latestTag) : null;
-  const currentDigest =
-    current !== "unknown" ? await registryDigest(host, "web", current) : null;
-  json(
-    response,
-    200,
-    {
-      current: {
-        version: current,
-        composeProject:
-          process.env.COMPOSE_PROJECT_NAME ?? "apertureprism-ai-review",
+    inProgress = (await readUpdateHistory(db, packageVersion())).inProgress;
+  } catch {
+    json(response, 503, { status: "error", reason: "history_read_failed" }, requestId);
+    return;
+  }
+  try {
+    const host = await reachableHost();
+    const primary = host === REGISTRY_HOST;
+    const tags = await fetchLatestTags(host);
+    const latestTag = tags[0];
+    const latestDigest = latestTag ? await registryDigest(host, "web", latestTag) : null;
+    const currentDigest =
+      current !== "unknown" ? await registryDigest(host, "web", current) : null;
+    let updateAvailable: boolean | null = null;
+    if (primary && latestTag && normalizeUpdateVersion(current) !== null) {
+      if (compareVersion(latestTag, current) <= 0) updateAvailable = false;
+      else if (latestDigest && currentDigest) updateAvailable = latestDigest !== currentDigest;
+    }
+    json(
+      response,
+      200,
+      {
+        current: {
+          version: current,
+          composeProject: process.env.COMPOSE_PROJECT_NAME ?? "apertureprism-ai-review",
+        },
+        latest: {
+          tags: tags.slice(0, 10),
+          version: latestTag ?? null,
+          digest: latestDigest,
+          source: host,
+          stale: !primary,
+        },
+        updateAvailable,
+        updateChannel: "latest",
+        inProgress: inProgress || updateRunning,
       },
-      latest: {
-        tags: tags.slice(0, 10),
-        version: latestTag ?? null,
-        digest: latestDigest,
-        // 数据来源与权威性：镜像站的 tags 常滞后于 ghcr.io，UI 应据此刻意弱化
-        // “最新版本”文案，避免误报（曾把镜像站残留的 v1.0.116 当成最新）。
-        source: host,
-        stale: !primary,
-      },
-      updateAvailable: Boolean(
-        latestTag &&
-          current !== latestTag &&
-          latestDigest &&
-          latestDigest !== currentDigest &&
-          primary,
-      ),
-      updateChannel: "latest",
-      // 是否正在执行更新（进程内锁）。暴露给前端：更新进行中时禁用「更新到
-      // 最新」按钮，避免刷新后封面按钮可点、一点就撞上 409 update_in_progress
-      // 却看不到任何"正在更新"的提示（#43）。
-      inProgress: updateRunning,
-    },
-    requestId,
-  );
+      requestId,
+    );
   } catch {
     json(
       response,
       503,
-      { status: "error", reason: "registry_unreachable", degraded: true },
+      {
+        status: "error",
+        reason: "registry_unreachable",
+        degraded: true,
+        current: { version: current },
+        updateAvailable: null,
+        inProgress: inProgress || updateRunning,
+      },
       requestId,
     );
   }
@@ -245,86 +261,65 @@ export async function handleUpdateStatus(
 /* ---------- update execution ---------- */
 
 const UPDATE_SCRIPT_PATH = process.env.UPDATE_SCRIPT ?? "/app/scripts/update.sh";
-let updateRunning = false;
 
-/**
- * Executes the in-container update script, streaming each JSON line to the
- * SSE client as `log` events and finishing with a `done` event. `onDone` runs
- * once the script exits (success or rollback) so history can be recorded.
- */
+/** Script completion only advances the already-durable running attempt to pending. */
 async function runUpdate(
-  request: IncomingMessage,
   response: ServerResponse,
   requestId: string,
-  target: string,
+  entry: UpdateHistoryEntry & { id: string },
   backupBefore: boolean,
-  onDone: (ok: boolean, reason: string | undefined) => void,
+  db: PostgresJsDatabase<typeof schema>,
 ): Promise<void> {
-  if (updateRunning) {
-    json(response, 409, { status: "error", reason: "update_in_progress" }, requestId);
-    return;
-  }
-  updateRunning = true;
-  const previous = currentVersion();
+  const { from: previous, to: target, id } = entry;
   let seq = 0;
-  // 心跳定时器可能因设置阶段异常而从未启动，故可空，方便兜底清理。
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
-  const push = (level: string, message: string): void => {
-    seq += 1;
-    response.write(serializeSseEvent({ seq, type: "log", data: { level, message } }));
-  };
-  const done = (ok: boolean, reason: string | undefined): void => {
+  let streaming = true;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const stopStreaming = (): void => {
+    streaming = false;
     if (heartbeat) clearInterval(heartbeat);
-    response.write(
-      serializeSseEvent({
-        seq: seq + 1,
-        type: "done",
-        data: ok
-          ? { ok, previous, applied: target }
-          : { ok, previous, applied: target, reason },
-      }),
-    );
-    response.end();
-    onDone(ok, reason);
   };
+  const write = (chunk: string): void => {
+    if (!streaming) return;
+    try {
+      response.write(chunk);
+    } catch {
+      stopStreaming();
+    }
+  };
+  const send = (type: string, data: unknown): void => {
+    write(serializeSseEvent({ seq: ++seq, type, data }));
+  };
+  const push = (level: string, message: string): void => send("log", { level, message });
 
-  // 同步设置阶段可能抛错（例如客户端在设置响应头之前就断开、writeHead 打到已
-  // 销毁的 socket、write 抛 ERR_STREAM_DESTROYED 等）。`updateRunning` 一旦置位，
-  // 若此处异常漏掉（此前无 finally），锁会永久卡住——之后一切更新请求都误返
-  // 409 update_in_progress、而实际并没有更新在跑，只能等 api 重启（#43 根因）。
-  // 这里 try/catch 兜底复位，绝不泄漏锁。
+  // A broken client stream is not an updater failure after launch. Never kill
+  // the child: nginx recreation and tab closes are expected during an update.
+  response.on("close", stopStreaming);
+  response.on("error", stopStreaming);
   try {
     response.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache",
+      "cache-control": "no-store",
       connection: "keep-alive",
+      "x-accel-buffering": "no",
       "x-request-id": requestId,
     });
     response.write(": update stream\n\n");
-
-    // 更新可能长时间静默（compose pull 的进度条用 `\r` 原地刷新、不产生换行，
-    // api 按 `\n` 切分后攒在缓冲区）。nginx 的 proxy_read_timeout 一旦超过静默
-    // 期就掐断连接，浏览器报 "network error"。每 30s 写一个 SSE 注释字节保持
-    // 连接存活；EventSource/手动 reader 都会忽略注释行。
-    heartbeat = setInterval(() => {
-      response.write(": keepalive\n\n");
-    }, 30_000);
   } catch {
-    // 连接已坏：不能再用 response 写 SSE，直接复位锁 + 结束，避免永久占用。
-    updateRunning = false;
-    if (heartbeat) clearInterval(heartbeat);
+    stopStreaming();
+    try {
+      await finishUpdate(db, id, false, "stream_setup_failed");
+    } catch {
+      console.error("Failed to persist update stream setup failure");
+    }
     try {
       response.destroy();
     } catch {
-      /* ignore */
-    }
-    try {
-      onDone(false, "stream_setup_failed");
-    } catch {
-      /* ignore */
+      // The client may already have destroyed the response.
     }
     return;
   }
+  send("started", { id, previous, target });
+  if (streaming) heartbeat = setInterval(() => write(": keepalive\n\n"), 30_000);
 
   const args = [
     "--target", target,
@@ -334,68 +329,84 @@ async function runUpdate(
     ...(backupBefore ? ["--backup"] : []),
   ];
 
-  const child = spawn("/bin/sh", [UPDATE_SCRIPT_PATH, ...args], {
-    env: { ...process.env, FORCE_COLOR: "0" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  const handleChunk = (chunk: Buffer): void => {
-    for (const line of chunk.toString("utf8").split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+  await new Promise<void>((resolveDone) => {
+    let finishing = false;
+    const complete = async (scriptOk: boolean, reason?: string): Promise<void> => {
+      // spawn can emit error followed by close. Claim completion synchronously,
+      // before awaiting persistence, so history and SSE each finish exactly once.
+      if (finishing) return;
+      finishing = true;
+      if (heartbeat) clearInterval(heartbeat);
+      let ok = false;
       try {
-        const parsed = JSON.parse(trimmed) as {
-          level?: string;
-          stage?: string;
-          message?: string;
-        };
-        // update.sh emits {"level":"stage","stage":"backup","message":"备份配置"}
-        // so the WebUI can advance a progress bar instead of only dumping logs.
-        if (parsed.level === "stage") {
-          seq += 1;
-          response.write(
-            serializeSseEvent({
-              seq,
-              type: "stage",
-              data: { stage: parsed.stage ?? "unknown", message: parsed.message ?? "" },
-            }),
-          );
-        } else {
-          push(parsed.level ?? "info", parsed.message ?? trimmed);
-        }
+        const saved = await finishUpdate(db, id, scriptOk, reason);
+        ok = scriptOk && saved.status === "pending";
+        if (!ok) reason = saved.reason ?? reason ?? "update_no_longer_running";
       } catch {
-        push("info", trimmed);
+        reason = "history_write_failed";
+        console.error("Failed to persist update completion");
+        // Best effort only for the failure path, never report fake script success.
+        try {
+          await finishUpdate(db, id, false, reason);
+        } catch {
+          console.error("Failed to persist update failure");
+        }
       }
+      push(ok ? "info" : "error", ok ? `等待运行版本确认（${target}）` : (reason ?? "update_failed"));
+      send("done", {
+        ok,
+        previous,
+        applied: target,
+        restartPending: ok,
+        ...(!ok && reason ? { reason } : {}),
+      });
+      if (streaming) {
+        try {
+          response.end();
+        } catch {
+          stopStreaming();
+        }
+      }
+      stopStreaming();
+      resolveDone();
+    };
+
+    try {
+      const child = spawn("/bin/sh", [UPDATE_SCRIPT_PATH, ...args], {
+        env: { ...process.env, FORCE_COLOR: "0" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        for (const line of chunk.toString("utf8").split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const parsed = JSON.parse(trimmed) as {
+              level?: string;
+              stage?: string;
+              message?: string;
+            };
+            if (parsed.level === "stage") {
+              send("stage", { stage: parsed.stage ?? "unknown", message: parsed.message ?? "" });
+            } else {
+              push(parsed.level ?? "info", parsed.message ?? trimmed);
+            }
+          } catch {
+            push("info", trimmed);
+          }
+        }
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        for (const line of chunk.toString("utf8").split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed) push("warn", trimmed);
+        }
+      });
+      child.on("error", () => void complete(false, "script_start_failed"));
+      child.on("close", (code) => void complete(code === 0, code === 0 ? undefined : `script_exit_${code}`));
+    } catch {
+      void complete(false, "script_start_failed");
     }
-  };
-  child.stdout.on("data", handleChunk);
-  child.stderr.on("data", (chunk) => {
-    for (const line of chunk.toString("utf8").split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed) push("warn", trimmed);
-    }
-  });
-
-  child.on("error", (error) => {
-    updateRunning = false;
-    push("error", `无法启动更新脚本：${error.message}`);
-    done(false, "script_start_failed");
-  });
-
-  child.on("close", (code) => {
-    updateRunning = false;
-    const ok = code === 0;
-    push(ok ? "info" : "error", ok ? `更新完成（${target}）` : `更新脚本退出码 ${code}`);
-    done(ok, ok ? undefined : `script_exit_${code}`);
-  });
-
-  response.on("close", () => {
-    // 客户端断开是更新流程中的预期事件：update.sh 中途会重建 web（nginx）容器，
-    // 经 nginx 的 SSE 连接随之断开；用户也可能中途关掉页面。绝不能在此 SIGKILL
-    // 更新脚本 —— 否则更新永远卡在「重建 web」那一步（历史里的 script_exit_null）。
-    // 让 update.sh 在后台继续跑完，状态由子进程 close 事件写回更新历史；
-    // updateRunning 由子进程 close 复位，避免并发更新。
-    if (heartbeat) clearInterval(heartbeat);
   });
 }
 
@@ -412,31 +423,77 @@ export async function handleUpdateApply(
     json(response, 403, { status: "error", reason: "admin required" }, requestId);
     return;
   }
-  const body = await readBody(request);
-  let parsed: { target?: unknown; backupBefore?: unknown } = {};
+  let parsed: { target?: unknown; backupBefore?: unknown };
   try {
-    parsed = JSON.parse(body.toString("utf8") || "{}");
+    const body: unknown = JSON.parse((await readBody(request)).toString("utf8") || "{}");
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid body");
+    parsed = body;
   } catch {
     json(response, 400, { status: "error", reason: "invalid JSON" }, requestId);
     return;
   }
-  const target = typeof parsed.target === "string" ? parsed.target : "latest";
-  if (!isValidUpdateTarget(target)) {
+  const requested = parsed.target === undefined ? "latest" : parsed.target;
+  if (typeof requested !== "string" || !isValidUpdateTarget(requested)) {
     json(response, 400, { status: "error", reason: "invalid target" }, requestId);
     return;
   }
   const backupBefore = parsed.backupBefore !== false;
-  // 在线更新是高敏感操作：目标版本与是否备份留痕（由 main.ts 注入审计回调）。
-  onAudit?.({ target, backupBefore });
-  await runUpdate(request, response, requestId, target, backupBefore, (ok, reason) => {
-    void writeHistory(db, {
-      at: new Date().toISOString(),
-      from: currentVersion(),
-      to: target,
-      ok,
-      ...(reason ? { reason } : {}),
-    });
-  });
+  if (updateRunning) {
+    json(response, 409, { status: "error", reason: "update_in_progress" }, requestId);
+    return;
+  }
+  // Check persisted state before any registry request (including after restart).
+  try {
+    if ((await readUpdateHistory(db, packageVersion())).inProgress) {
+      json(response, 409, { status: "error", reason: "update_in_progress" }, requestId);
+      return;
+    }
+  } catch {
+    json(response, 503, { status: "error", reason: "history_read_failed" }, requestId);
+    return;
+  }
+  let target: string;
+  try {
+    target = await resolveUpdateTarget(requested);
+  } catch {
+    json(response, 503, { status: "error", reason: "target_resolution_failed" }, requestId);
+    return;
+  }
+  if (updateRunning) {
+    json(response, 409, { status: "error", reason: "update_in_progress" }, requestId);
+    return;
+  }
+  updateRunning = true;
+  try {
+    let entry: (UpdateHistoryEntry & { id: string }) | null;
+    try {
+      // The second check and durable running write are atomic. Network resolution
+      // stays outside this lock so one slow registry never holds a DB transaction.
+      entry = await reserveUpdate(db, currentVersion(), target, packageVersion());
+    } catch {
+      json(response, 503, { status: "error", reason: "history_write_failed" }, requestId);
+      return;
+    }
+    if (!entry) {
+      json(response, 409, { status: "error", reason: "update_in_progress" }, requestId);
+      return;
+    }
+    try {
+      onAudit?.({ id: entry.id, target, backupBefore });
+    } catch {
+      console.error("Failed to set up update audit");
+      try {
+        await finishUpdate(db, entry.id, false, "update_setup_failed");
+      } catch {
+        console.error("Failed to persist update setup failure");
+      }
+      json(response, 503, { status: "error", reason: "update_setup_failed" }, requestId);
+      return;
+    }
+    await runUpdate(response, requestId, entry, backupBefore, db);
+  } finally {
+    updateRunning = false;
+  }
 }
 
 /** Handles GET /update/history — admin only. */
@@ -446,43 +503,10 @@ export async function handleUpdateHistory(
   db: PostgresJsDatabase<typeof schema>,
 ): Promise<void> {
   try {
-    const rows = await db
-      .select({ value: schema.systemSettings.value })
-      .from(schema.systemSettings)
-      .where(eq(schema.systemSettings.key, HISTORY_SETTING_KEY))
-      .limit(1);
-    const items = rows[0]?.value
-      ? (JSON.parse(rows[0].value) as UpdateHistoryEntry[])
-      : [];
-    json(response, 200, { items }, requestId);
+    const state = await readUpdateHistory(db, packageVersion());
+    json(response, 200, { ...state, currentVersion: currentVersion(), inProgress: state.inProgress || updateRunning }, requestId);
   } catch {
-    json(response, 200, { items: [] }, requestId);
-  }
-}
-
-async function writeHistory(
-  db: PostgresJsDatabase<typeof schema>,
-  entry: UpdateHistoryEntry,
-): Promise<void> {
-  try {
-    const rows = await db
-      .select({ value: schema.systemSettings.value })
-      .from(schema.systemSettings)
-      .where(eq(schema.systemSettings.key, HISTORY_SETTING_KEY))
-      .limit(1);
-    const existing = rows[0]?.value
-      ? (JSON.parse(rows[0].value) as UpdateHistoryEntry[])
-      : [];
-    const next = [entry, ...existing].slice(0, 50);
-    await db
-      .insert(schema.systemSettings)
-      .values({ key: HISTORY_SETTING_KEY, value: JSON.stringify(next) })
-      .onConflictDoUpdate({
-        target: schema.systemSettings.key,
-        set: { value: JSON.stringify(next), updatedAt: new Date() },
-      });
-  } catch {
-    // history persistence is best-effort
+    json(response, 503, { status: "error", reason: "history_read_failed" }, requestId);
   }
 }
 
@@ -491,6 +515,7 @@ async function writeHistory(
 function json(response: ServerResponse, status: number, body: unknown, requestId: string): void {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
     "x-request-id": requestId,
   });
   response.end(JSON.stringify(body));

@@ -30,12 +30,22 @@ while [ $# -gt 0 ]; do
 done
 
 case "$TARGET" in
-  v[0-9]*.[0-9]*.[0-9]*|latest|stable) ;;
-  *) log error "invalid target: $TARGET"; exit 1 ;;
+  ''|*[!a-zA-Z0-9.]*) log error "invalid update target"; exit 1 ;;
 esac
+if ! printf '%s\n' "$TARGET" | grep -Eq '^(v?[0-9]+\.[0-9]+\.[0-9]+|latest|stable)$'; then
+  log error "invalid update target"
+  exit 1
+fi
 
 OLD_TAG="${IMAGE_TAG:-latest}"
 log info "update target=$TARGET current=$OLD_TAG project=$PROJECT"
+if [ "$DRY_RUN" = "1" ]; then
+  log info "dry-run: would pull $TARGET, run migrate, then up -d --force-recreate"
+  exit 0
+fi
+# Compose gives exported variables priority over --env-file, including the old
+# IMAGE_TAG inherited from this container's service-level env_file.
+export IMAGE_TAG="$TARGET"
 
 # Rebuild the compose env file from the container environment so the script
 # (and any nested `env_file:` in compose) has every production variable.
@@ -44,6 +54,7 @@ log info "update target=$TARGET current=$OLD_TAG project=$PROJECT"
 # AP_VERIFY 必须保留：丢了它，下次在线更新就不叠加 compose.verify.yml，
 # 服务会建到默认网络，web 解析不到 api 导致 502（NAS 实测网络分裂事故）。
 # OAUTH_REDIRECT_URI 同样必须保留，否则 OAuth 登录回调会失效。
+umask 077
 env | grep -E '^(DATABASE_URL|REDIS_URL|WEBUI_API_TOKEN|MODEL_PROVIDER_BASE_URLS|DEFAULT_LLM_MODEL|CREDENTIAL_MASTER_KEY|INDEX_INTERVAL_MS|API_PORT|WEB_PORT|HOST|PORT|LOG_LEVEL|NODE_ENV|AP_VERIFY|OAUTH_REDIRECT_URI)=|^(POSTGRES_|GITHUB_|EMBEDDING_|QQ_)' > "$ENV_FILE" || true
 echo "IMAGE_TAG=$TARGET" >> "$ENV_FILE"
 
@@ -75,11 +86,6 @@ PROFILE_ARG=""
 if docker ps --format '{{.Names}}' | grep -q '^apertureprism-ai-review-qq-bot-1$'; then
   PROFILE_ARG="--profile qq"
   APP_SERVICES="$APP_SERVICES qq-bot"
-fi
-
-if [ "$DRY_RUN" = "1" ]; then
-  log info "dry-run: would pull $TARGET, run migrate, then up -d --force-recreate"
-  exit 0
 fi
 
 if [ "$BACKUP" = "1" ] && [ -f /app/scripts/backup.mjs ]; then
@@ -146,10 +152,12 @@ log info "up ok"
 
 stage health "等待服务健康检查"
 attempt=0
+healthy=0
 while [ "$attempt" -lt 12 ]; do
   attempt=$((attempt + 1))
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/health/ready" 2>/dev/null)
+  code=$(curl --connect-timeout 3 --max-time 5 -s -o /dev/null -w '%{http_code}' "$API_URL/health/ready" 2>/dev/null)
   if [ "$code" = "200" ]; then
+    healthy=1
     log info "health ok (attempt $attempt)"
     break
   fi
@@ -157,8 +165,9 @@ while [ "$attempt" -lt 12 ]; do
   sleep 5
 done
 
-if [ "$attempt" -ge 12 ]; then
+if [ "$healthy" != "1" ]; then
   log error "health check failed; rolling back to $OLD_TAG"
+  export IMAGE_TAG="$OLD_TAG"
   sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$OLD_TAG/" "$ENV_FILE"
   if compose $PROFILE_ARG up -d --force-recreate --no-deps $SERVICES 2>&1; then
     log info "rolled back to $OLD_TAG"
@@ -174,7 +183,7 @@ log info "waiting for web layer (nginx -> api)…"
 web_attempt=0
 while [ "$web_attempt" -lt 8 ]; do
   web_attempt=$((web_attempt + 1))
-  code=$(curl -s -o /dev/null -w '%{http_code}' "http://web/health/live" 2>/dev/null)
+  code=$(curl --connect-timeout 3 --max-time 5 -s -o /dev/null -w '%{http_code}' "http://web/health/live" 2>/dev/null)
   if [ "$code" = "200" ]; then
     log info "web layer ok (attempt $web_attempt)"
     break
@@ -192,18 +201,34 @@ sleep 2
 # waits a few seconds so the final "done" SSE event flushes to the WebUI first.
 stage api "重启 API 容器"
 log info "scheduling api restart…"
-API_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$(hostname)" 2>/dev/null || echo "ghcr.io/apertureprism/apertureprism-ai-review/api:$TARGET")"
-ENV_B64="$(base64 "$ENV_FILE" | tr -d '\n')"
+if ! API_CONFIG="$(compose config --format json)"; then
+  log error "cannot resolve target compose configuration"
+  exit 1
+fi
+if ! API_IMAGE_REF="$(printf '%s' "$API_CONFIG" | node -e 'let input=""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => { try { const image = JSON.parse(input).services?.api?.image; if (typeof image !== "string" || !image) process.exit(1); process.stdout.write(image); } catch { process.exit(1); } });')" || [ -z "$API_IMAGE_REF" ]; then
+  log error "cannot resolve target API image"
+  exit 1
+fi
+if ! API_IMAGE="$(docker image inspect --format '{{.Id}}' "$API_IMAGE_REF" 2>/dev/null)" || [ -z "$API_IMAGE" ]; then
+  log error "target API image is unavailable"
+  exit 1
+fi
+# Use the pulled image ID so a mutable tag cannot select the old API image.
+# The detached helper needs the same host key mount when it resolves compose.
+export APRISM_UPDATE_ENV_B64="$(base64 "$ENV_FILE" | tr -d '\n')"
 if docker run -d --rm --name "aprism-api-recreate-$(date +%s)" \
+  --env APRISM_UPDATE_ENV_B64 \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v "${GITHUB_APP_KEY_MOUNT:-/opt/apertureprism/github-app.pem}:/opt/apertureprism/github-app.pem:ro" \
   "$API_IMAGE" \
-  /bin/sh -c "echo '$ENV_B64' | base64 -d > /app/docker/.env.production && sleep 3 && docker compose --project-name '$PROJECT' $COMPOSE_FILES --env-file /app/docker/.env.production up -d --no-deps api && sleep 5 && docker image prune -f" \
+  /bin/sh -c "umask 077; printf '%s' \"\$APRISM_UPDATE_ENV_B64\" | base64 -d > /app/docker/.env.production && unset APRISM_UPDATE_ENV_B64 && export IMAGE_TAG='$TARGET' && sleep 10 && docker compose --project-name '$PROJECT' $COMPOSE_FILES --env-file /app/docker/.env.production up -d --force-recreate --no-deps api && sleep 5 && docker image prune -f" \
   >/dev/null 2>&1; then
-  log info "api restart scheduled; the page will reload automatically"
+  log info "api restart scheduled; waiting for target runtime confirmation"
 else
-  log warn "api restart scheduling failed; restart api manually: docker compose -f docker/docker-compose.prod.yml --env-file docker/.env.production up -d --force-recreate api"
+  log error "api restart scheduling failed; restart api manually: docker compose -f docker/docker-compose.prod.yml --env-file docker/.env.production up -d --force-recreate api"
+  exit 1
 fi
 
-stage done "更新完成"
-log info "更新完成；API 正在重启，请稍等几秒再刷新页面"
+stage done "镜像已部署，等待 API 版本确认"
+log info "API 正在重启；运行版本确认前不会标记更新成功"
 exit 0

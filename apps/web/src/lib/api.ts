@@ -38,10 +38,14 @@ async function getJson(url: string): Promise<unknown> {
   return data;
 }
 
-async function fetchJson(url: string): Promise<unknown> {
+async function fetchJson(
+  url: string,
+  options: Pick<RequestInit, "cache" | "signal"> = {},
+): Promise<unknown> {
   const response = await fetch(url, {
     credentials: "same-origin",
     headers: { accept: "application/json", ...authHeaders() },
+    ...options,
   });
   if (response.status === 401) {
     // 令牌失效：通知应用回到登录页（密码门禁）。仅顶层一次，避免重复触发。
@@ -1403,10 +1407,17 @@ export async function fetchHealth(): Promise<HealthResult> {
 
 export type UpdateStatus = {
   current: { version: string; composeProject: string };
-  latest: { tags: string[]; version: string | null; digest: string | null };
-  updateAvailable: boolean;
+  latest: {
+    tags: string[];
+    version: string | null;
+    digest: string | null;
+    source?: string;
+    stale?: boolean;
+  };
+  updateAvailable: boolean | null;
   updateChannel: string;
   inProgress?: boolean;
+  degraded?: boolean;
 };
 
 export type UpdateHistoryEntry = {
@@ -1415,11 +1426,24 @@ export type UpdateHistoryEntry = {
   to: string;
   ok: boolean;
   reason?: string;
+  id?: string;
+  status?: "running" | "pending" | "success" | "failed";
+  updatedAt?: string;
+};
+
+export type UpdateProgress = {
+  items: UpdateHistoryEntry[];
+  /** Older APIs omit these fields; missing metadata is not confirmation. */
+  currentVersion?: string;
+  inProgress?: boolean;
 };
 
 /** Online update: current vs latest version comparison (registry check). */
-export async function fetchUpdateStatus(): Promise<UpdateStatus> {
+export async function fetchUpdateStatus(signal?: AbortSignal): Promise<UpdateStatus> {
   const response = await fetch("/update/status", {
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
     headers: { accept: "application/json", ...authHeaders() },
   });
   if (response.status === 401) {
@@ -1434,24 +1458,31 @@ export async function fetchUpdateStatus(): Promise<UpdateStatus> {
   return (await response.json()) as UpdateStatus;
 }
 
-/** Online update: recent update history (admin). */
+/** Fresh runtime/attempt reconciliation; never use the short-lived GET cache. */
+export async function fetchUpdateProgress(signal?: AbortSignal): Promise<UpdateProgress> {
+  return (await fetchJson("/update/history", {
+    cache: "no-store",
+    signal,
+  })) as UpdateProgress;
+}
+
+/** Online update: recent update history (admin), kept for existing callers. */
 export async function fetchUpdateHistory(): Promise<UpdateHistoryEntry[]> {
-  const result = (await getJson("/update/history")) as {
-    items: UpdateHistoryEntry[];
-  };
-  return result.items;
+  return (await fetchUpdateProgress()).items;
 }
 
 /**
  * Online update: triggers an update, returning the SSE body stream of log
- * lines (`log` / `done` events). Admin only.
+ * lines (`started` / `log` / `stage` / `done` events). Admin only.
  */
 export async function applyUpdate(
   target: string,
   backupBefore: boolean,
+  signal?: AbortSignal,
 ): Promise<ReadableStream<Uint8Array> | null> {
   const response = await fetch("/update/apply", {
     method: "POST",
+    signal,
     headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify({ target, backupBefore }),
   });

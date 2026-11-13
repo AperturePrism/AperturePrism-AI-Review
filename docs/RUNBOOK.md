@@ -91,7 +91,18 @@ docker compose -f docker/docker-compose.prod.yml exec -T postgres \
 - **仓库扫描**：`GET /scans/config`（全局开关 + 逐仓库配置）、`PUT /scans/config`（管理员修改）、
   `POST /scans/run`（管理员手动触发一轮）、`GET /scans/runs`（扫描历史）。
 - **在线更新**：`GET /update/status`（版本对比）、`POST /update/apply`（管理员，SSE 阶段日志 +
-  自动回滚）、`GET /update/history`（历史）。WebUI 更新完成后会倒计时自动刷新页面。
+  自动回滚）、`GET /update/history`（历史与轻量运行版本确认）。更新固定到具体版本；脚本完成后记录为“待确认”，只有新 API 的镜像内版本与目标一致才标记成功。WebUI 在断流或重启期间继续确认，不再把连接结束或固定等待几秒当成成功。API 版本来自镜像内 `package.json`，不会被旧的 `IMAGE_TAG` 覆盖；无法确认的注册表状态不会显示“已是最新”。
+  - 历史中的 `running` 表示脚本仍在执行，`pending` 表示等待 API 版本确认；未确认的重启超过 3 分钟、失联脚本超过 30 分钟后显示失败原因。旧记录保留原样，不将旧的“成功”推断为新版本已运行。
+  - **#150：旧版本更新器的首次修复**。若页面显示更新成功但当前版本未变，新代码尚未进入运行中的旧 API，不能靠重复点击或清空浏览器缓存修复。需要从部署目录手动升级一次：将 `docker/.env.production` 的 `IMAGE_TAG` 改为已发布且包含修复的 `vX.Y.Z`，再按以下顺序执行（使用部署原有的 compose 覆盖文件、项目名和 profile；不要变更网络或密钥配置）：
+
+    ```bash
+    # 在当前 shell 未导出旧 IMAGE_TAG 的前提下执行；如已导出，先 unset IMAGE_TAG。
+    docker compose -f docker/docker-compose.prod.yml --env-file docker/.env.production pull
+    docker compose -f docker/docker-compose.prod.yml --env-file docker/.env.production run --rm -T migrate
+    docker compose -f docker/docker-compose.prod.yml --env-file docker/.env.production up -d --force-recreate
+    ```
+
+    完成后重新检查当前版本。`docker compose up` 成功或历史里出现 `latest` 本身不是运行目标版本的证据。新的确认状态只验证 API 的运行版本，不替代各 worker 的健康检查或全栈逐个镜像摘要审计。
 - **运行时配置热更新**：`PUT /settings`（`webui_api_token` / `github_webhook_secret` /
   `github_webhook_enabled` / `log_level` / `pr_check_run` / `pr_auto_review`，约 8s 生效）。
 

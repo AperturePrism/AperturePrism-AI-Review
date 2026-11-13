@@ -16,6 +16,13 @@
 > 增强记录（v1.0.13）：
 > - `scripts/update.sh` 输出 `stage` 阶段标记（backup/pull/migrate/up/health/done），后端转为独立 `stage` SSE 事件
 > - UpdatePanel 增加阶段进度条、日志折叠（默认收起）、更新完成倒计时自动刷新页面
+>
+> 修复记录（#150，以下早期接口示例不代表最新确认语义）：
+> - 当前版本以 API 镜像内 `package.json` 为准，更新目标固定到具体版本，修复旧 `IMAGE_TAG` 覆盖 Compose 目标的问题。
+> - 脚本退出 0 / SSE `done.ok=true` 仅表示部署阶段完成；历史先进入 `pending`，新 API 运行版本与目标一致后才进入 `success` / `ok=true`。
+> - `/update/history` 额外返回 `currentVersion`、`inProgress`，条目可含 `id`、`status`、`updatedAt`；旧历史条目仍兼容。操作状态不缓存。
+> - 页面在断流后轮询确认，不再将 EOF 当成成功或仅靠倒计时刷新；无法确认版本时保留待确认/失败信息。注册表数据不完整或来源滞后时，`updateAvailable=null` 表示未知，不显示“已是最新”。
+> - 旧镜像内更新器的首次修复与人工升级步骤见 [运维手册](RUNBOOK.md)。API 版本确认不等于全栈逐个容器镜像校验。
 
 ## 1. 背景与目标
 
