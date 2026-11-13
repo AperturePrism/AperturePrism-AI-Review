@@ -100,6 +100,10 @@ function toModelError(error: unknown): ModelInvocationError {
 }
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted)
+    return Promise.reject(
+      new ModelInvocationError("canceled", "wait was canceled"),
+    );
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -163,7 +167,11 @@ export async function routeModelInvocation(
       ) {
         if (remaining() <= 0) {
           lastCategory = "timeout";
-          throw new ModelRoutingFailedError(lastCategory, attempts, lastMessage);
+          throw new ModelRoutingFailedError(
+            lastCategory,
+            attempts,
+            lastMessage,
+          );
         }
 
         const startedAt = new Date(now());
@@ -196,7 +204,11 @@ export async function routeModelInvocation(
           });
 
           if (modelError.category === "canceled")
-            throw new ModelRoutingFailedError("canceled", attempts, lastMessage);
+            throw new ModelRoutingFailedError(
+              "canceled",
+              attempts,
+              lastMessage,
+            );
           // Genuine credential problems are non-retryable, but a flaky gateway
           // that intermittently 401s can be opted into bounded retries.
           const authenticationRetryable =
@@ -222,7 +234,17 @@ export async function routeModelInvocation(
               lastMessage,
             );
           }
-          await sleep(delay, controller.signal);
+          try {
+            await sleep(delay, controller.signal);
+          } catch (error) {
+            if (controller.signal.aborted)
+              throw new ModelRoutingFailedError(
+                "canceled",
+                attempts,
+                lastMessage,
+              );
+            throw error;
+          }
         }
       }
     }
@@ -240,14 +262,35 @@ async function withDeadline(
   signal: AbortSignal,
   budgetMs: number,
 ): Promise<ModelInvocationResponse> {
+  if (signal.aborted)
+    throw new ModelInvocationError("canceled", "invocation was canceled");
   const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  signal.addEventListener("abort", onAbort, { once: true });
-  const timer = setTimeout(() => controller.abort(), budgetMs);
+  let onAbort: () => void = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(new ModelInvocationError("canceled", "invocation was canceled"));
+      controller.abort();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      reject(
+        new ModelInvocationError("timeout", "candidate exceeded deadline"),
+      );
+      controller.abort();
+    }, budgetMs);
+  });
   try {
-    return await adapter.invoke(candidate, request, controller.signal);
+    // Adapters are asked to abort their transport, but routing must also settle
+    // if a provider ignores the signal or hangs while resolving credentials.
+    return await Promise.race([
+      adapter.invoke(candidate, request, controller.signal),
+      interrupted,
+    ]);
   } catch (error) {
-    if (controller.signal.aborted && !signal.aborted)
+    if (signal.aborted)
+      throw new ModelInvocationError("canceled", "invocation was canceled");
+    if (controller.signal.aborted)
       throw new ModelInvocationError("timeout", "candidate exceeded deadline");
     throw error;
   } finally {
