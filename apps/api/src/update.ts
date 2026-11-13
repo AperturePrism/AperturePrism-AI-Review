@@ -220,6 +220,8 @@ export async function handleUpdateStatus(
       updateAvailable: Boolean(
         latestTag &&
           current !== latestTag &&
+          (!/^v?\d+\.\d+\.\d+$/.test(current) ||
+            compareVersion(latestTag, current) > 0) &&
           latestDigest &&
           latestDigest !== currentDigest &&
           primary,
