@@ -10,7 +10,11 @@ import { beginCheckRun, checkRunIdempotencyKey } from "./check-run.js";
 
 type Publication = Pick<
   typeof externalPublications.$inferSelect,
-  "taskId" | "idempotencyKey" | "externalObjectId" | "channel"
+  | "taskId"
+  | "idempotencyKey"
+  | "externalObjectId"
+  | "channel"
+  | "checkRunCompletedAt"
 >;
 
 const input = {
@@ -31,12 +35,16 @@ const progress = {
   summary: "正在分析 PR 的变更与上下文，请稍候…",
 };
 
-function publication(externalObjectId: string | null = "101"): Publication {
+function publication(
+  externalObjectId: string | null = "101",
+  checkRunCompletedAt: Date | null = null,
+): Publication {
   return {
     taskId: "task-1",
     idempotencyKey: key,
     externalObjectId,
     channel: "check_run",
+    checkRunCompletedAt,
   };
 }
 
@@ -84,15 +92,27 @@ function publicationDatabase(seed: Publication[] = []) {
       // unique key, rather than deleting it or inserting a task-specific key.
       expect(sql).toContain('insert into "external_publications"');
       expect(sql).toContain(
-        'on conflict ("idempotency_key") do update set "task_id" = $5, "external_object_id" = $6, "channel" = $7, "updated_at" = $8',
+        'on conflict ("idempotency_key") do update set "task_id" = $6, "external_object_id" = $7, "channel" = $8, "check_run_completed_at" = $9, "updated_at" = $10',
       );
-      const [taskId, idempotencyKey, externalObjectId, channel] = params;
-      expect(params.slice(4, 7)).toEqual([taskId, externalObjectId, channel]);
+      const [
+        taskId,
+        idempotencyKey,
+        externalObjectId,
+        channel,
+        checkRunCompletedAt,
+      ] = params;
+      expect(params.slice(5, 9)).toEqual([
+        taskId,
+        externalObjectId,
+        channel,
+        null,
+      ]);
       if (
         typeof taskId !== "string" ||
         typeof idempotencyKey !== "string" ||
         typeof externalObjectId !== "string" ||
-        channel !== "check_run"
+        channel !== "check_run" ||
+        checkRunCompletedAt !== null
       ) {
         throw new Error("unexpected check-run publication values");
       }
@@ -102,6 +122,7 @@ function publicationDatabase(seed: Publication[] = []) {
         idempotencyKey,
         externalObjectId,
         channel,
+        checkRunCompletedAt,
       });
       return { rows: [] };
     },
@@ -156,14 +177,18 @@ describe("beginCheckRun", () => {
     await beginCheckRun({ ...input, db: store.db, github });
 
     expect(github.updateCheckRun).not.toHaveBeenCalled();
-    expect(github.createCheckRun).toHaveBeenCalledExactlyOnceWith({
-      ...progress,
-      headSha: input.revision,
-      runName: "AperturePrism AI Review",
-    });
+    expect(github.createCheckRun).toHaveBeenCalledExactlyOnceWith(
+      {
+        ...progress,
+        headSha: input.revision,
+        runName: "AperturePrism AI Review",
+      },
+      expect.any(AbortSignal),
+    );
     expect(store.publications.size).toBe(1);
     expect(await store.findByKey(key)).toBe("202");
     expect(await store.findByTask(input.taskId)).toBe("202");
+    expect(store.publications.get(key)?.checkRunCompletedAt).toBeNull();
   });
 
   it("restores the existing run without creating another, rebinding its task", async () => {
@@ -172,10 +197,10 @@ describe("beginCheckRun", () => {
 
     await beginCheckRun({ ...input, db: store.db, github });
 
-    expect(github.updateCheckRun).toHaveBeenCalledExactlyOnceWith({
-      ...progress,
-      checkRunId: 101,
-    });
+    expect(github.updateCheckRun).toHaveBeenCalledExactlyOnceWith(
+      { ...progress, checkRunId: 101 },
+      expect.any(AbortSignal),
+    );
     expect(github.createCheckRun).not.toHaveBeenCalled();
     expect(store.write).toHaveBeenCalledOnce();
     expect(store.publications.size).toBe(1);
@@ -183,6 +208,37 @@ describe("beginCheckRun", () => {
     expect(await store.findByTask(input.taskId)).toBe("101");
     expect(await store.findByTask("task-1")).toBeNull();
   });
+
+  it.each([
+    { label: "same task retry", taskId: "task-1", replaceRun: false },
+    { label: "new task reuse", taskId: input.taskId, replaceRun: false },
+    { label: "replacement run", taskId: input.taskId, replaceRun: true },
+  ])(
+    "clears the previous completion acknowledgement for $label",
+    async ({ taskId, replaceRun }) => {
+      const completedAt = new Date("2026-08-18T00:00:00Z");
+      const store = publicationDatabase([publication("101", completedAt)]);
+      const github = githubClient();
+      if (replaceRun) {
+        github.updateCheckRun.mockRejectedValueOnce(
+          new GitHubApiError(
+            "invalid_request",
+            "completed run cannot restart",
+            422,
+          ),
+        );
+      }
+
+      await beginCheckRun({ ...input, taskId, db: store.db, github });
+
+      expect(store.publications.get(key)).toEqual({
+        ...publication(replaceRun ? "202" : "101"),
+        taskId,
+        checkRunCompletedAt: null,
+      });
+      expect(store.write).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     new GitHubApiError("invalid_request", "completed run cannot restart", 422),
@@ -195,22 +251,77 @@ describe("beginCheckRun", () => {
 
     await beginCheckRun({ ...input, db: store.db, github });
 
-    expect(github.updateCheckRun).toHaveBeenCalledExactlyOnceWith({
-      ...progress,
-      checkRunId: 101,
-    });
-    expect(github.createCheckRun).toHaveBeenCalledExactlyOnceWith({
-      ...progress,
-      headSha: input.revision,
-      runName: "AperturePrism AI Review",
-    });
+    expect(github.updateCheckRun).toHaveBeenCalledExactlyOnceWith(
+      { ...progress, checkRunId: 101 },
+      expect.any(AbortSignal),
+    );
+    expect(github.createCheckRun).toHaveBeenCalledExactlyOnceWith(
+      {
+        ...progress,
+        headSha: input.revision,
+        runName: "AperturePrism AI Review",
+      },
+      expect.any(AbortSignal),
+    );
+    expect(github.createCheckRun.mock.calls[0]?.[1]).toBe(
+      github.updateCheckRun.mock.calls[0]?.[1],
+    );
     expect(store.write).toHaveBeenCalledOnce();
     expect(store.publications.size).toBe(1);
-    // Completion/final failure use the key; API cancel/live status use task ID.
+    // Terminal reconciliation and live status address the canonical mapping.
     expect(await store.findByKey(key)).toBe("202");
     expect(await store.findByTask(input.taskId)).toBe("202");
     expect(await store.findByTask("task-1")).toBeNull();
   });
+
+  it.each([
+    { label: "creation", seed: [], restoring: false },
+    { label: "restoration", seed: [publication()], restoring: true },
+  ])(
+    "bounds a stalled $label request and preserves its mapping",
+    async ({ seed, restoring }) => {
+      const store = publicationDatabase(seed);
+      const github = githubClient();
+      const controller = new AbortController();
+      const timeout = vi
+        .spyOn(AbortSignal, "timeout")
+        .mockReturnValue(controller.signal);
+      const error = new GitHubApiError(
+        "canceled",
+        "request was canceled",
+        null,
+      );
+      let started!: () => void;
+      const requestStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const waitForAbort = (_args: unknown, signal?: AbortSignal) =>
+        new Promise<{ id: number; htmlUrl: string }>((_resolve, reject) => {
+          expect(signal).toBe(controller.signal);
+          signal?.addEventListener("abort", () => reject(error), {
+            once: true,
+          });
+          started();
+        });
+      if (restoring) github.updateCheckRun.mockImplementationOnce(waitForAbort);
+      else github.createCheckRun.mockImplementationOnce(waitForAbort);
+
+      try {
+        const pending = beginCheckRun({ ...input, db: store.db, github });
+        const rejected = expect(pending).rejects.toBe(error);
+        await requestStarted;
+        expect(timeout).toHaveBeenCalledExactlyOnceWith(15_000);
+        controller.abort();
+        await rejected;
+
+        expect(github.createCheckRun).toHaveBeenCalledTimes(restoring ? 0 : 1);
+        expect(store.write).not.toHaveBeenCalled();
+        expect([...store.publications.values()]).toEqual(seed);
+      } finally {
+        timeout.mockRestore();
+      }
+    },
+  );
 
   it.each([
     { label: "initial creation", seed: [] },

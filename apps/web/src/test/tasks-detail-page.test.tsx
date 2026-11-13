@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,11 +10,12 @@ vi.mock("../lib/api", () => ({
 }));
 
 import { ToastProvider } from "../components/Toast";
-import type { TaskDetail } from "../lib/api";
+import type { CheckRunStatus, TaskCheckRunResult, TaskDetail } from "../lib/api";
 const { TaskDetailPage } = await import("../pages/TaskDetailPage");
 const api = await import("../lib/api");
 
 const fetchTaskDetail = vi.mocked(api.fetchTaskDetail);
+const fetchTaskCheckRun = vi.mocked(api.fetchTaskCheckRun);
 const cancelTasks = vi.mocked(api.cancelTasks);
 
 function detail(status: string): TaskDetail {
@@ -39,6 +40,39 @@ function detail(status: string): TaskDetail {
   };
 }
 
+function checkRunDetail(status: string, id = "task-1"): TaskDetail {
+  return {
+    ...detail(status),
+    id,
+    taskType: "pr_review",
+    publications: [{
+      channel: "check_run",
+      externalObjectId: "101",
+      createdAt: "2026-08-21T10:00:00Z",
+    }],
+  };
+}
+
+function checkRunResult(status: CheckRunStatus["status"]): TaskCheckRunResult {
+  return {
+    status: "ok",
+    present: true,
+    checkRun: {
+      id: 101,
+      status,
+      conclusion: status === "completed" ? "success" : null,
+      title: null,
+      htmlUrl: null,
+    },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((fulfill) => { resolve = fulfill; });
+  return { promise, resolve };
+}
+
 function renderPage(id = "task-1") {
   return render(
     <ToastProvider>
@@ -49,13 +83,116 @@ function renderPage(id = "task-1") {
 
 beforeEach(() => {
   fetchTaskDetail.mockReset();
+  fetchTaskCheckRun.mockReset();
+  fetchTaskCheckRun.mockResolvedValue({ status: "ok", present: false });
   cancelTasks.mockReset();
   cancelTasks.mockResolvedValue({ status: "ok", canceled: 1, skipped: 0 });
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 
 afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("Check Run reconciliation polling", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+
+  it.each(["completed", "failed", "canceled"])(
+    "keeps polling a %s task's pending Check Run until completion",
+    async (status) => {
+      fetchTaskDetail.mockResolvedValue(checkRunDetail(status));
+      fetchTaskCheckRun
+        .mockResolvedValueOnce(checkRunResult("in_progress"))
+        .mockResolvedValue(checkRunResult("completed"));
+      await act(async () => { renderPage(); });
+
+      expect(screen.getByText("进行中…")).toBeTruthy();
+      expect(fetchTaskCheckRun).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(screen.getByText("已完成 · 成功")).toBeTruthy();
+      expect(fetchTaskCheckRun).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(fetchTaskCheckRun).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not repeat queries for an already completed terminal Check Run", async () => {
+    fetchTaskDetail.mockResolvedValue(checkRunDetail("completed"));
+    fetchTaskCheckRun.mockResolvedValue(checkRunResult("completed"));
+    await act(async () => { renderPage(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(fetchTaskCheckRun.mock.calls).toEqual([["task-1"]]);
+  });
+
+  it("retries a degraded terminal read without overlapping slow requests", async () => {
+    const pending = deferred<TaskCheckRunResult>();
+    fetchTaskDetail.mockResolvedValue(checkRunDetail("completed"));
+    fetchTaskCheckRun
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce({ status: "ok", present: false, degraded: true })
+      .mockResolvedValue(checkRunResult("completed"));
+    await act(async () => { renderPage(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(fetchTaskCheckRun).toHaveBeenCalledTimes(1);
+
+    await act(async () => { pending.resolve(checkRunResult("in_progress")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText("状态获取失败（GitHub 不可达或未配置）")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText("已完成 · 成功")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(fetchTaskCheckRun).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores the prior task's late Check Run response after navigation", async () => {
+    const oldCheck = deferred<TaskCheckRunResult>();
+    fetchTaskDetail.mockResolvedValueOnce(checkRunDetail("completed"))
+      .mockResolvedValue(checkRunDetail("completed", "task-2"));
+    fetchTaskCheckRun.mockReturnValueOnce(oldCheck.promise)
+      .mockResolvedValue(checkRunResult("completed"));
+    let view!: ReturnType<typeof renderPage>;
+    await act(async () => { view = renderPage(); });
+    await act(async () => {
+      view.rerender(<ToastProvider><TaskDetailPage id="task-2" /></ToastProvider>);
+    });
+    expect(screen.getByText("已完成 · 成功")).toBeTruthy();
+    await act(async () => { oldCheck.resolve(checkRunResult("in_progress")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+
+    expect(screen.queryByText("进行中…")).toBeNull();
+    expect(fetchTaskCheckRun.mock.calls).toEqual([["task-1"], ["task-2"]]);
+  });
+
+  it("ignores the prior task's late detail response after navigation", async () => {
+    const oldDetail = deferred<TaskDetail>();
+    fetchTaskDetail.mockReturnValueOnce(oldDetail.promise)
+      .mockResolvedValue(checkRunDetail("completed", "task-2"));
+    fetchTaskCheckRun.mockResolvedValue(checkRunResult("completed"));
+    let view!: ReturnType<typeof renderPage>;
+    await act(async () => { view = renderPage(); });
+    await act(async () => {
+      view.rerender(<ToastProvider><TaskDetailPage id="task-2" /></ToastProvider>);
+    });
+    await act(async () => { oldDetail.resolve(checkRunDetail("running")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+
+    expect(screen.queryByRole("button", { name: "取消任务" })).toBeNull();
+    expect(fetchTaskCheckRun.mock.calls).toEqual([["task-2"]]);
+  });
+
+  it("does not restart polling when a pending request resolves after unmount", async () => {
+    const pending = deferred<TaskCheckRunResult>();
+    fetchTaskDetail.mockResolvedValue(checkRunDetail("completed"));
+    fetchTaskCheckRun.mockReturnValue(pending.promise);
+    let view!: ReturnType<typeof renderPage>;
+    await act(async () => { view = renderPage(); });
+    view.unmount();
+    await act(async () => { pending.resolve(checkRunResult("in_progress")); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(fetchTaskCheckRun).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("任务详情页取消按钮", () => {
@@ -63,7 +200,7 @@ describe("任务详情页取消按钮", () => {
     fetchTaskDetail.mockResolvedValue(detail("running"));
     renderPage();
     const cancelButton = await screen.findByRole("button", { name: "取消任务" });
-    await userEvent.click(cancelButton);
+    await act(async () => { await userEvent.click(cancelButton); });
     expect(cancelTasks).toHaveBeenCalledWith(["task-1"]);
     expect(await screen.findByText(/已取消任务/)).toBeTruthy();
   });

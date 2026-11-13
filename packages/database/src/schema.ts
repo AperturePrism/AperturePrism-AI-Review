@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   customType,
@@ -260,6 +261,9 @@ export const externalPublications = pgTable(
     idempotencyKey: text("idempotency_key").notNull(),
     externalObjectId: text("external_object_id"),
     channel: varchar("channel", { length: 50 }).notNull(),
+    checkRunCompletedAt: timestamp("check_run_completed_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -271,6 +275,11 @@ export const externalPublications = pgTable(
     uniqueIndex("external_publications_idempotency_unique").on(
       table.idempotencyKey,
     ),
+    index("external_publications_pending_check_idx")
+      .on(table.updatedAt, table.id)
+      .where(
+        sql`${table.channel} = 'check_run' and ${table.checkRunCompletedAt} is null`,
+      ),
   ],
 );
 
