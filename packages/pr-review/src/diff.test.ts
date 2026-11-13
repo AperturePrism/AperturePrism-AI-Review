@@ -80,3 +80,24 @@ index 1..2 100644
     expect(diff.deletions).toBe(1);
   });
 });
+it("keeps header-like source lines inside a hunk as deletions and additions", () => {
+  const parsed = parseUnifiedDiff(`diff --git a/notes.txt b/notes.txt
+--- a/notes.txt
++++ b/notes.txt
+@@ -1,2 +1,2 @@
+--- old heading
++++ new heading
+ unchanged
+`);
+  expect(parsed.files[0]).toMatchObject({
+    oldPath: "notes.txt",
+    newPath: "notes.txt",
+    additions: 1,
+    deletions: 1,
+  });
+  expect(parsed.files[0]?.hunks?.[0]?.lines).toEqual([
+    { kind: "delete", afterLine: 0, text: "-- old heading" },
+    { kind: "add", afterLine: 1, text: "++ new heading" },
+    { kind: "context", afterLine: 2, text: "unchanged" },
+  ]);
+});

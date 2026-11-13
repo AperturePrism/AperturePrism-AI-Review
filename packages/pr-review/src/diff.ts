@@ -73,11 +73,11 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
     }
     if (!current) continue;
 
-    if (line.startsWith("--- ")) {
+    if (!inHunk && line.startsWith("--- ")) {
       current.oldPath = decodePath(line.slice(4));
       continue;
     }
-    if (line.startsWith("+++ ")) {
+    if (!inHunk && line.startsWith("+++ ")) {
       current.newPath = decodePath(line.slice(4));
       continue;
     }
