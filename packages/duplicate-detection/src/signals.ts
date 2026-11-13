@@ -41,7 +41,15 @@ export function extractIssueSignals(input: LeadIssueNormalized): IssueSignals {
   const paths = Array.from(
     new Set(
       Array.from(haystack.matchAll(MODULE_PATTERN), (m) => m[1])
-        .map((p) => (p ?? "").split("/")[0] ?? "")
+        .map((path) => {
+          if (!path) return "";
+          const parts = path.split("/");
+          // A scope alone is not a package: @scope/http and @scope/storage
+          // must not contribute a shared strong signal.
+          return path.startsWith("@")
+            ? parts.slice(0, 2).join("/")
+            : (parts[0] ?? "");
+        })
         .filter(Boolean),
     ),
   );
