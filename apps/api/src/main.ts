@@ -136,6 +136,7 @@ import {
   resetTaskToQueued,
 } from "../../../packages/task-engine/src/index.js";
 import { PR_REVIEW_POLICY_VERSION } from "../../../packages/pr-review/src/index.js";
+import { triggerManualAnalysis } from "./manual-task.js";
 import {
   BUILTIN_SKILLS,
   EXPERT_TEAM,
@@ -1380,6 +1381,11 @@ async function handleManualTask(
     return;
   }
 
+  if (!(await canAccessRepo(request, repo.id, "manage"))) {
+    json(response, 403, { status: "error", reason: "repository_manage_required" }, requestId);
+    return;
+  }
+
   const github = await githubClientPromise;
   let subjectRevision: string;
   if (type === "pr") {
@@ -1417,7 +1423,19 @@ async function handleManualTask(
     type === "issue" ? ISSUE_ANALYSIS_POLICY_VERSION : PR_REVIEW_POLICY_VERSION;
   const taskType = type === "issue" ? "issue_analysis" : "pr_review";
   const keyPrefix = type === "issue" ? "issue-analysis" : "pr-review";
-  const result = await createAnalysisTask(database.db, {
+  const result = await triggerManualAnalysis({
+    create: (input) => createAnalysisTask(database.db, input),
+    reset: (taskId) => resetTaskToQueued(database.db, { taskId }),
+    find: async (taskId) => {
+      const [task] = await database.db.select({
+        id: analysisTasks.id,
+        taskType: analysisTasks.taskType,
+        status: analysisTasks.status,
+        dedupeKey: analysisTasks.dedupeKey,
+      }).from(analysisTasks).where(eq(analysisTasks.id, taskId)).limit(1);
+      return task ? { ...task, taskType } : null;
+    },
+  }, {
     taskType,
     repositoryId: repo.id,
     subjectNumber,
@@ -1437,13 +1455,10 @@ async function handleManualTask(
   audit(request, "task.manual_trigger", repositoryFullName, {
     type,
     subjectNumber,
+    outcome: result.outcome,
+    taskId: result.taskId,
   });
-  json(
-    response,
-    200,
-    { status: "ok", taskId: result.task.id, outcome: result.outcome },
-    requestId,
-  );
+  json(response, 200, { status: "ok", ...result }, requestId);
 }
 
 /**
