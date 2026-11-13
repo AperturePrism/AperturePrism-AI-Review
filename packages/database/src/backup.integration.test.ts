@@ -78,6 +78,29 @@ describeIntegration("backup snapshot PostgreSQL integration", () => {
     expect(restored[0]?.version).toBe("restored-v1");
   });
 
+  it("rolls back settings and policy replacement when a later insert fails", async () => {
+    const before = await buildBackupSnapshot(client.db);
+    const policy = {
+      role: "issue_analysis",
+      version: "duplicate-role-must-rollback",
+      candidates: [],
+    };
+
+    // Duplicate roles violate the existing unique constraint after the first
+    // policy insert, so this exercises a failure after settings and DELETE.
+    await expect(
+      applyBackupSnapshot(client.db, {
+        version: BACKUP_VERSION,
+        settings: [{ key: "log_level", value: "trace", hasValue: true }],
+        policies: [policy, policy],
+      }),
+    ).rejects.toThrow();
+
+    const after = await buildBackupSnapshot(client.db);
+    expect(after.settings).toEqual(before.settings);
+    expect(after.policies).toEqual(before.policies);
+  });
+
   it("rejects an unsupported backup version", async () => {
     await expect(
       applyBackupSnapshot(client.db, {
