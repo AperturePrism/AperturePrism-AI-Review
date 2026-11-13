@@ -34,3 +34,32 @@ describe("MetricsRegistry", () => {
     expect(Date.parse(snap.since)).not.toBeNaN();
   });
 });
+
+describe("metrics snapshot isolation", () => {
+  it("does not expose mutable duration buckets from the registry", () => {
+    const registry = new MetricsRegistry();
+    registry.recordDuration("model.invoke", 100);
+    const snapshot = registry.snapshot();
+    snapshot.durations["model.invoke"]!.count = 50;
+    snapshot.durations["model.invoke"]!.totalMs = 9_999;
+
+    expect(registry.snapshot().durations["model.invoke"]).toEqual({
+      count: 1,
+      totalMs: 100,
+    });
+    registry.recordDuration("model.invoke", 25);
+    expect(registry.snapshot().durations["model.invoke"]).toEqual({
+      count: 2,
+      totalMs: 125,
+    });
+  });
+
+  it("returns independently mutable duration buckets for every snapshot", () => {
+    const registry = new MetricsRegistry();
+    registry.recordDuration("model.invoke", 100);
+    const first = registry.snapshot();
+    const second = registry.snapshot();
+    first.durations["model.invoke"]!.totalMs = 0;
+    expect(second.durations["model.invoke"]!.totalMs).toBe(100);
+  });
+});

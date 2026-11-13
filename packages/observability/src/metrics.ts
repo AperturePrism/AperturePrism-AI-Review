@@ -49,7 +49,7 @@ export class MetricsRegistry {
     const counters: Record<string, number> = {};
     for (const [key, value] of this.counters) counters[key] = value;
     const durations: Record<string, DurationBucket> = {};
-    for (const [key, value] of this.durations) durations[key] = value;
+    for (const [key, value] of this.durations) durations[key] = { ...value };
     const gauges: Record<string, number> = {};
     for (const [key, value] of this.gauges) gauges[key] = value;
     return {
