@@ -344,9 +344,13 @@ export function ReposPage() {
         subjectNumber: number,
       });
       toast.success(
-        result.outcome === "duplicate"
-          ? `任务已存在（去重），taskId：${result.taskId}`
-          : `已创建任务，taskId：${result.taskId}`,
+        result.outcome === "requeued"
+          ? `已重新入队，taskId：${result.taskId}`
+          : result.outcome === "duplicate"
+            ? result.taskStatus === "completed"
+              ? `该版本已审核完成，无需重复触发，taskId：${result.taskId}`
+              : `任务已在队列或执行中，无需重复触发，taskId：${result.taskId}`
+            : `已创建任务，taskId：${result.taskId}`,
       );
     } catch (err) {
       toast.error(`触发失败：${explainUnknown(err)}`);

@@ -1588,12 +1588,14 @@ export type ManualTriggerInput = {
 export type ManualTriggerResult = {
   status: string;
   taskId: string;
-  outcome: "created" | "duplicate";
+  outcome: "created" | "requeued" | "duplicate";
+  taskStatus?: TaskSummary["status"];
 };
 
 /**
  * Manually enqueues an issue analysis or PR review task for an installed
- * repository. Returns the created task id (or reports a dedupe hit).
+ * repository. Failed/canceled tasks get a fresh attempt budget; active or
+ * successfully completed tasks retain their idempotency record.
  */
 export async function triggerManualTask(
   input: ManualTriggerInput,
@@ -1604,7 +1606,7 @@ export async function triggerManualTask(
     body: JSON.stringify(input),
   });
   const text = await response.text();
-  let parsed: { status?: string; reason?: string; taskId?: string; outcome?: "created" | "duplicate" } = {};
+  let parsed: { status?: string; reason?: string; taskId?: string; outcome?: ManualTriggerResult["outcome"]; taskStatus?: TaskSummary["status"] } = {};
   try {
     parsed = text ? JSON.parse(text) : {};
   } catch {
@@ -1618,6 +1620,7 @@ export async function triggerManualTask(
     status: parsed.status ?? "ok",
     taskId: parsed.taskId ?? "",
     outcome: parsed.outcome ?? "created",
+    ...(parsed.taskStatus ? { taskStatus: parsed.taskStatus } : {}),
   };
 }
 

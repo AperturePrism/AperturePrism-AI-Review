@@ -78,7 +78,10 @@ describe("已安装仓库页（#15 收尾）", () => {
   });
 
   it("有仓库 → 渲染仓库卡片与任务/结果计数", async () => {
-    fetchRepositories.mockResolvedValue({ items: [REPO], githubConfigured: true });
+    fetchRepositories.mockResolvedValue({
+      items: [REPO],
+      githubConfigured: true,
+    });
     renderPage();
     expect(await screen.findByText("widget")).toBeTruthy();
     expect(screen.getByText("· acme")).toBeTruthy();
@@ -109,8 +112,52 @@ describe("已安装仓库页（#15 收尾）", () => {
     await userEvent.click(
       await screen.findByRole("button", { name: /^同步仓库$/ }),
     );
-    expect(
-      await screen.findByText(/已有一次仓库同步正在进行中/),
-    ).toBeTruthy();
+    expect(await screen.findByText(/已有一次仓库同步正在进行中/)).toBeTruthy();
   });
+
+  it.each([
+    {
+      outcome: "requeued" as const,
+      taskStatus: "queued",
+      message: "已重新入队",
+    },
+    {
+      outcome: "duplicate" as const,
+      taskStatus: "running",
+      message: "任务已在队列或执行中",
+    },
+    {
+      outcome: "duplicate" as const,
+      taskStatus: "completed",
+      message: "该版本已审核完成",
+    },
+  ])(
+    "手动重审显示 $outcome / $taskStatus 的真实结果",
+    async ({ outcome, taskStatus, message }) => {
+      fetchRepositories.mockResolvedValue({
+        items: [REPO],
+        githubConfigured: true,
+      });
+      vi.mocked(api.triggerManualTask).mockResolvedValueOnce({
+        status: "ok",
+        taskId: "task-1",
+        outcome,
+        taskStatus,
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await screen.findByText("widget");
+      const selectors = screen.getAllByRole("combobox");
+      await user.selectOptions(selectors[0]!, REPO.fullName);
+      await user.selectOptions(selectors[1]!, "pr");
+      await user.type(screen.getByPlaceholderText("编号，如 12"), "40");
+      await user.click(screen.getByRole("button", { name: "触发分析" }));
+      expect(await screen.findByText(new RegExp(message))).toBeTruthy();
+      expect(api.triggerManualTask).toHaveBeenCalledWith({
+        type: "pr",
+        repositoryFullName: REPO.fullName,
+        subjectNumber: 40,
+      });
+    },
+  );
 });
