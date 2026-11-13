@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyPrSize, renderDiffForModel } from "./context.js";
+import { classifyPrSize, renderDiffForModel, renderHunksText } from "./context.js";
 import { parseUnifiedDiff } from "./diff.js";
 
 describe("classifyPrSize", () => {
@@ -34,4 +34,26 @@ describe("renderDiffForModel", () => {
     const ctx = renderDiffForModel(diff, { maxInlineFiles: 25, maxLinesPerFile: 400, maxTokens: 12000 });
     expect(ctx.degraded).toContain("large_file_head_tail_only");
   });
+});
+
+it("enforces the diff token ceiling even for very long source lines", () => {
+  const diff = parseUnifiedDiff(`diff --git a/data.ts b/data.ts\n--- a/data.ts\n+++ b/data.ts\n@@ -0,0 +1,2 @@\n+${"a".repeat(2000)}\n+tail\n`);
+  const budget = { maxInlineFiles: 25, maxLinesPerFile: 400, maxTokens: 100 };
+  const context = renderDiffForModel(diff, budget);
+  const text = renderHunksText(context);
+  expect(text.length).toBeLessThanOrEqual(budget.maxTokens * 4);
+  expect(text).toContain("token_budget_exceeded");
+  expect(context.degraded).toContain("token_budget_exceeded");
+  expect(text.split("\n").filter((line) => line === "```")).toHaveLength(2);
+});
+
+it("retains a custom diff budget when the prompt renders it later", () => {
+  const diff = parseUnifiedDiff(`diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -0,0 +1,3 @@\n+first\n+middle\n+last\n`);
+  const context = renderDiffForModel(diff, {
+    maxInlineFiles: 1,
+    maxLinesPerFile: 2,
+    maxTokens: 100,
+  });
+  expect(renderHunksText(context)).toContain("+first\n…\n+last");
+  expect(renderHunksText(context)).not.toContain("middle");
 });

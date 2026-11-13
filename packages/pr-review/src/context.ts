@@ -54,6 +54,8 @@ export const DEFAULT_PR_REVIEW_BUDGET: PrReviewBudget = {
 
 export type RenderedPrContext = {
   diff: ParsedDiff;
+  /** Budget retained for the later prompt-rendering step. */
+  budget?: PrReviewBudget;
   keptFiles: readonly DiffFile[];
   /** Files mentioned by name only because they were not inlined. */
   listedFiles: readonly string[];
@@ -124,13 +126,37 @@ export function renderDiffForModel(
 
   // Deduplicate listed files that also appear in keptFiles (defensive).
   const listed = [...new Set(listedFiles)];
-  return { diff, keptFiles, listedFiles: listed, degraded };
+  const context = { diff, keptFiles, listedFiles: listed, degraded, budget: { ...budget } };
+  if (renderUnboundedHunksText(context, budget).length > budget.maxTokens * 4) {
+    degraded.push("token_budget_exceeded");
+  }
+  return context;
 }
 
-/** Renders the kept hunks for the prompt, truncated per file head+tail. */
+/**
+ * Renders the diff inside the rough token ceiling (four characters per token,
+ * matching issue-analysis). Whole trailing lines are dropped when necessary;
+ * the marker makes omitted context explicit and code fences remain balanced.
+ */
 export function renderHunksText(
   context: RenderedPrContext,
-  budget: PrReviewBudget = DEFAULT_PR_REVIEW_BUDGET,
+  budget: PrReviewBudget = context.budget ?? DEFAULT_PR_REVIEW_BUDGET,
+): string {
+  const text = renderUnboundedHunksText(context, budget);
+  const maxChars = Math.max(0, Math.floor(budget.maxTokens * 4));
+  if (text.length <= maxChars) return text;
+  const marker = "\n\n注意：diff 已降级：token_budget_exceeded。";
+  if (maxChars < marker.length + 4) return marker.trim().slice(0, maxChars);
+  const prefix = text.slice(0, maxChars - marker.length - 4);
+  const lastNewline = prefix.lastIndexOf("\n");
+  const kept = lastNewline < 0 ? "" : prefix.slice(0, lastNewline);
+  const openFence = kept.split("\n").filter((line) => line === "```").length % 2;
+  return kept + (openFence ? "\n```" : "") + marker;
+}
+
+function renderUnboundedHunksText(
+  context: RenderedPrContext,
+  budget: PrReviewBudget,
 ): string {
   const chunks: string[] = [];
   for (const file of context.keptFiles) {
