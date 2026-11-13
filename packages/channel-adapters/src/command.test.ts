@@ -17,7 +17,9 @@ describe("bot command parser", () => {
       kind: "retry",
       raw: "https://github.com/o/r/issues/7",
     });
-    expect(parseBotCommand("/status 123e4567-e89b-12d3-a456-426614174000")).toEqual({
+    expect(
+      parseBotCommand("/status 123e4567-e89b-12d3-a456-426614174000"),
+    ).toEqual({
       kind: "status",
       raw: "123e4567-e89b-12d3-a456-426614174000",
     });
@@ -60,4 +62,13 @@ describe("bot command parser", () => {
     expect(parseBotCommand("/unknown")).toBeNull();
     expect(parseBotCommand("")).toBeNull();
   });
+});
+
+describe("bot command registry boundaries", () => {
+  it.each(["/constructor", "/__proto__", "/toString", "/valueOf"])(
+    "ignores inherited object property %s",
+    (text) => {
+      expect(parseBotCommand(text)).toBeNull();
+    },
+  );
 });
