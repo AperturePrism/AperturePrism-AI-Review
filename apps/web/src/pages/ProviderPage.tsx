@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import {
   bumpCache,
   deleteProvider,
@@ -15,6 +15,9 @@ import { modelRoleLabel } from "../lib/labels";
 import { SettingsSection } from "../components/SettingsSection";
 import { useToast } from "../components/Toast";
 
+// 固定长度的已保存状态标记，不是原密钥，也不能作为凭据提交。
+const SAVED_API_KEY_MASK = "••••••••••••••••";
+
 /**
  * 新增/编辑模型的表单。此前模型配置只能在安装向导里做一次，装完之后本页是纯只读，
  * 用户「点进模型路由却找不到配置的地方」（issue #2）。后端 /setup/provider 只要求
@@ -23,16 +26,21 @@ import { useToast } from "../components/Toast";
  */
 function AddProviderForm({
   onSaved,
+  onCancel,
   initial,
 }: {
   onSaved: () => void;
+  onCancel?: () => void;
   initial?: ProviderAccount;
 }) {
   const toast = useToast();
+  const apiKeyId = useId();
   const [open, setOpen] = useState(!!initial);
   const [provider, setProvider] = useState(initial?.provider ?? "");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
+  const [replacingKey, setReplacingKey] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
   const [model, setModel] = useState("");
   const [accountName, setAccountName] = useState(initial?.name ?? "");
   const [models, setModels] = useState<string[]>([]);
@@ -43,6 +51,8 @@ function AddProviderForm({
     setProvider("");
     setBaseUrl("");
     setApiKey("");
+    setReplacingKey(false);
+    setShowApiKey(false);
     setModel("");
     setAccountName("");
     setModels([]);
@@ -51,16 +61,23 @@ function AddProviderForm({
 
   // 编辑模式下账号名不可改（provider+name 是唯一键，改了等于新建）。
   const editing = !!initial;
+  const keepingSavedKey = editing && !replacingKey;
+  // 已保存标记只用于展示；后端用空串保留原密文，绝不发送掩码。
+  const submittedApiKey = keepingSavedKey ? "" : apiKey.trim();
 
   // 拉取模型列表既是便利，也是对 baseUrl/apiKey 的一次连通性验证。
   const probeModels = async () => {
-    if (!baseUrl.trim() || !apiKey.trim()) {
-      toast.error("请先填写 Base URL 与 API Key");
+    if (!baseUrl.trim() || !submittedApiKey) {
+      toast.error(
+        editing
+          ? "已保存的密钥不会回传；获取模型列表需填写 Base URL 并输入新 API Key，或直接填写模型名保留原密钥"
+          : "请先填写 Base URL 与 API Key",
+      );
       return;
     }
     setProbing(true);
     try {
-      const list = await fetchModels(baseUrl.trim(), apiKey.trim());
+      const list = await fetchModels(baseUrl.trim(), submittedApiKey);
       setModels(list);
       if (list.length === 0) toast.info("连接成功，但该地址未返回可用模型");
       else {
@@ -78,7 +95,7 @@ function AddProviderForm({
     const payload = {
       provider: provider.trim(),
       baseUrl: baseUrl.trim(),
-      apiKey: apiKey.trim(),
+      apiKey: submittedApiKey,
       model: model.trim() || (models[0] ?? ""),
       ...(accountName.trim() ? { accountName: accountName.trim() } : {}),
     };
@@ -102,6 +119,7 @@ function AddProviderForm({
     } catch (err) {
       toast.error(`保存失败：${explainUnknown(err)}`);
     } finally {
+      setShowApiKey(false);
       setSaving(false);
     }
   };
@@ -116,11 +134,11 @@ function AddProviderForm({
   }
 
   return (
-    <section className="panel">
+    <section className="panel" aria-label={editing ? "编辑模型" : "添加模型"}>
       <div className="panel-title">
         <h2>{editing ? "编辑模型" : "添加模型"}</h2>
         <span className="count">
-          {editing ? "更新 baseUrl/模型，密钥留空保留" : "保存后自动接入全部分析角色"}
+          {editing ? "更新 baseUrl/模型，默认保留原密钥" : "保存后自动接入全部分析角色"}
         </span>
       </div>
       <div className="stack" style={{ gap: 10 }}>
@@ -141,19 +159,81 @@ function AddProviderForm({
           />
         </div>
         <div className="filters">
-          <input
-            className="input"
-            style={{ flex: "1 1 260px" }}
-            type="password"
-            placeholder={editing ? "API Key（留空保留原密钥）" : "API Key"}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            data-lpignore="true"
-          />
-          <button className="btn" onClick={probeModels} disabled={probing}>
+          {keepingSavedKey ? (
+            <>
+              <input
+                className="input"
+                style={{ flex: "1 1 260px" }}
+                type="password"
+                aria-label="API Key（已保存）"
+                aria-describedby={`${apiKeyId}-hint`}
+                value={SAVED_API_KEY_MASK}
+                readOnly
+                autoComplete="off"
+                data-lpignore="true"
+              />
+              <button
+                className="btn"
+                disabled={saving || probing}
+                onClick={() => setReplacingKey(true)}
+              >
+                替换密钥
+              </button>
+            </>
+          ) : (
+            <>
+              <input
+                id={apiKeyId}
+                className="input"
+                style={{ flex: "1 1 260px" }}
+                type={showApiKey ? "text" : "password"}
+                aria-label={editing ? "新 API Key" : "API Key"}
+                aria-describedby={editing ? `${apiKeyId}-hint` : undefined}
+                placeholder={editing ? "新 API Key（留空保留原密钥）" : "API Key"}
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  if (!e.target.value) setShowApiKey(false);
+                }}
+                disabled={saving || probing}
+                autoComplete="new-password"
+                data-lpignore="true"
+              />
+              <button
+                className="btn"
+                aria-controls={apiKeyId}
+                aria-pressed={showApiKey}
+                disabled={!apiKey || saving || probing}
+                onClick={() => setShowApiKey((shown) => !shown)}
+              >
+                {showApiKey ? "隐藏新密钥" : "显示新密钥"}
+              </button>
+              {editing ? (
+                <button
+                  className="btn"
+                  disabled={saving || probing}
+                  onClick={() => {
+                    setApiKey("");
+                    setShowApiKey(false);
+                    setReplacingKey(false);
+                  }}
+                >
+                  保留原密钥
+                </button>
+              ) : null}
+            </>
+          )}
+          <button className="btn" onClick={probeModels} disabled={probing || saving}>
             {probing ? "获取中…" : "获取模型列表"}
           </button>
         </div>
+        {editing ? (
+          <p id={`${apiKeyId}-hint`} className="faint" style={{ margin: 0, fontSize: 12 }}>
+            {keepingSavedKey
+              ? "已保存 API Key，将保留原密钥。掩码仅表示已保存，原密钥不会回传；如需更换请点「替换密钥」。"
+              : "仅显示本次输入的新密钥；留空或点「保留原密钥」不会修改已保存的密钥。"}
+          </p>
+        ) : null}
         <div className="filters">
           {models.length > 0 ? (
             <select
@@ -186,10 +266,17 @@ function AddProviderForm({
           />
         </div>
         <div className="filters">
-          <button className="btn btn-primary" onClick={submit} disabled={saving}>
+          <button className="btn btn-primary" onClick={submit} disabled={saving || probing}>
             {saving ? "保存中…" : editing ? "保存修改" : "保存并接入"}
           </button>
-          <button className="btn" onClick={reset} disabled={saving}>
+          <button
+            className="btn"
+            onClick={() => {
+              reset();
+              onCancel?.();
+            }}
+            disabled={saving || probing}
+          >
             取消
           </button>
         </div>
@@ -342,6 +429,7 @@ export function ProviderPage() {
         <AddProviderForm
           key={`edit:${editing.provider}:${editing.name}`}
           initial={editing}
+          onCancel={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
             load();
