@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as schema from "./schema.js";
 
@@ -145,7 +145,13 @@ export async function getRepoMemorySummary(
     .where(
       and(
         eq(schema.repoMemory.repositoryId, repositoryId),
-        eq(schema.repoMemory.consolidated, true),
+        // Raw reflections remain history even after they are consolidated.
+        inArray(schema.repoMemory.kind, ["rule", "knowledge"]),
+        or(
+          eq(schema.repoMemory.consolidated, true),
+          // Older schedulers omitted consolidated=true on derived entries.
+          eq(schema.repoMemory.sourceType, "consolidation"),
+        ),
       ),
     )
     .orderBy(asc(schema.repoMemory.createdAt))
