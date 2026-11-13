@@ -82,10 +82,9 @@ export async function buildPrContext(
     .map((f) => ({ path: f.newPath, churn: f.additions + f.deletions }))
     .sort((a, b) => b.churn - a.churn)
     .slice(0, CHANGED_FILE_PRELOAD_MAX);
-  const headSha =
-    (pullRequest as { head?: { sha?: string } }).head?.sha ??
-    (pullRequest as { mergeCommitSha?: string }).mergeCommitSha ??
-    "HEAD";
+  // GitHubClient returns normalized metadata, not GitHub's nested REST payload.
+  // Pin preloads to the same revision as the reviewed change, including fork PRs.
+  const headSha = pullRequest.headSha;
   const preloadedFiles: { path: string; content: string }[] = [];
   let preloadTotal = 0;
   for (const f of textFiles) {

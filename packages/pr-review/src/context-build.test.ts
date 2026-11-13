@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GitHubClient } from "../../../packages/github-adapter/src/index.js";
 import { buildPrContext } from "./context-build.js";
 
@@ -89,4 +89,23 @@ describe("buildPrContext", () => {
     expect(context.rendered.diff.additions).toBe(2);
     expect(context.rendered.diff.deletions).toBe(1);
   });
+});
+
+it("preloads changed files at the normalized pull request head SHA", async () => {
+  const github = makeGithub();
+  const getFileContents = vi.fn<GitHubClient["getFileContents"]>().mockResolvedValue({
+    content: "export const y = 1;",
+    sha: "blob-sha",
+  });
+  github.getFileContents = getFileContents;
+  await buildPrContext(github, {
+    installationId: "i",
+    owner: "o",
+    name: "r",
+    pullNumber: 9,
+  });
+  expect(getFileContents).toHaveBeenCalledWith(
+    expect.objectContaining({ path: "src/a.ts", ref: "abc123" }),
+    undefined,
+  );
 });
