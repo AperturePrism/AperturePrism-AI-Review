@@ -76,3 +76,45 @@ it.each(["low", "info"] as const)(
     ]);
   },
 );
+
+const validReview: PrReviewContract = {
+  contractVersion: "pr-review/v1", summary: "审查通过", changedFileCount: 1,
+  additions: 1, deletions: 0, overallTone: "approve", findings: [],
+};
+
+function optionsFor(invoke: ModelProviderAdapter["invoke"]) {
+  return {
+    adapters: new Map([[candidate.provider, { provider: candidate.provider, invoke }]]),
+    candidates: [candidate], deadlineMs: 10_000,
+    retryPolicy: { maxAttemptsPerCandidate: 1, baseDelayMs: 0, maxDelayMs: 0 },
+  };
+}
+
+it("persists the actual tool call and result messages from the review", async () => {
+  const call = { id: "tool-1", name: "get_git_info", arguments: "{}" };
+  const invoke = vi.fn<ModelProviderAdapter["invoke"]>()
+    .mockResolvedValueOnce({ content: "读取仓库信息", toolCalls: [call], usage: { inputTokens: 1, outputTokens: 1 } })
+    .mockResolvedValueOnce({ content: JSON.stringify(validReview), usage: { inputTokens: 2, outputTokens: 2 } });
+  const outcome = await reviewPullRequest({
+    ...optionsFor(invoke),
+    tools: { context: {
+      client: {} as import("../../github-adapter/src/index.js").GitHubClient,
+      installationId: "i", owner: "o", name: "r", ref: "head-sha",
+    } },
+  }, context);
+  expect(outcome.outcome).toBe("valid");
+  expect(outcome.messages).toContainEqual({ role: "assistant", content: "读取仓库信息", toolCalls: [call] });
+  expect(outcome.messages).toContainEqual({ role: "tool", toolCallId: "tool-1", content: "仓库: o/r\n读取 ref: head-sha" });
+  expect(outcome.messages?.at(-1)?.content).toBe(JSON.stringify(validReview));
+});
+
+it("persists the repaired result as the last assistant message", async () => {
+  const invoke = vi.fn<ModelProviderAdapter["invoke"]>()
+    .mockResolvedValueOnce({ content: "invalid-json", usage: { inputTokens: 1, outputTokens: 1 } })
+    .mockResolvedValueOnce({ content: JSON.stringify(validReview), usage: { inputTokens: 2, outputTokens: 2 } });
+  const outcome = await reviewPullRequest(optionsFor(invoke), context);
+  expect(outcome.outcome).toBe("valid");
+  expect(outcome.messages?.at(-1)).toEqual({ role: "assistant", content: JSON.stringify(validReview) });
+  expect(outcome.messages).toContainEqual({ role: "assistant", content: "invalid-json" });
+  expect(outcome.messages?.some((message) => message.role === "user" && message.content.includes("没有通过契约校验"))).toBe(true);
+});
