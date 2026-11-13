@@ -106,3 +106,78 @@ describe("judgeDuplicates", () => {
     expect(outcome.outcome).toBe("invalid");
   });
 });
+
+describe("duplicate repair cancellation", () => {
+  const input = {
+    lead: { issueNumber: 1, title: "crash", body: "HTTP_511" },
+    candidates: [{ issueNumber: 7, title: "same crash", body: "HTTP_511" }],
+  };
+
+  it("does not start a repair after the caller has canceled", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const a: ModelProviderAdapter = {
+      provider: "newapi",
+      invoke: async () => {
+        calls += 1;
+        if (calls === 1) {
+          controller.abort();
+          return {
+            content: "not JSON",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: validJudgment,
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    await expect(
+      judgeDuplicates(
+        {
+          adapters: new Map([["newapi", a]]),
+          candidates: [candidate],
+          ...refOptions,
+          signal: controller.signal,
+        },
+        input,
+      ),
+    ).rejects.toThrow(/canceled/);
+    expect(calls).toBe(1);
+  });
+
+  it("forwards cancellation while a repair is in progress", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const a: ModelProviderAdapter = {
+      provider: "newapi",
+      invoke: async (_candidate, _request, signal) => {
+        calls += 1;
+        if (calls === 1)
+          return {
+            content: "not JSON",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        controller.abort();
+        if (signal.aborted) throw new DOMException("canceled", "AbortError");
+        return {
+          content: validJudgment,
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    await expect(
+      judgeDuplicates(
+        {
+          adapters: new Map([["newapi", a]]),
+          candidates: [candidate],
+          ...refOptions,
+          signal: controller.signal,
+        },
+        input,
+      ),
+    ).rejects.toThrow(/canceled/);
+    expect(calls).toBe(2);
+  });
+});

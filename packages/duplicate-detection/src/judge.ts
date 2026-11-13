@@ -156,6 +156,7 @@ export async function judgeDuplicates(
     deadlineMs: Math.max(0, options.deadlineMs),
     retryPolicy: options.retryPolicy,
     stickyCandidate: main.candidate,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 
   const repaired = parseDuplicateJudgmentJson(repair.response.content);
