@@ -25,8 +25,8 @@ export function checkRunIdempotencyKey(
 
 /**
  * Reuses a Check Run only if GitHub accepts the transition to in_progress.
- * Keep one canonical publication row so completion/final failure (key lookup)
- * and cancellation/live status (task lookup) all address the current run.
+ * Keep one canonical publication row so terminal reconciliation and live
+ * status both address the current run.
  * Errors propagate to the handler's best-effort Check Run boundary.
  */
 export async function beginCheckRun(input: BeginCheckRunInput): Promise<void> {
@@ -42,6 +42,9 @@ export async function beginCheckRun(input: BeginCheckRunInput): Promise<void> {
     .where(eq(externalPublications.idempotencyKey, key))
     .limit(1);
   let runId = rows[0]?.externalObjectId ?? null;
+  // Check support is best-effort: an unresponsive GitHub/token exchange must
+  // not hold the review (and its lease heartbeat) open indefinitely.
+  const signal = AbortSignal.timeout(15_000);
   const progress = {
     installationId: input.installationId,
     owner: input.owner,
@@ -53,21 +56,25 @@ export async function beginCheckRun(input: BeginCheckRunInput): Promise<void> {
 
   if (runId !== null) {
     try {
-      await input.github.updateCheckRun({
-        ...progress,
-        checkRunId: Number(runId),
-      });
-    } catch {
+      await input.github.updateCheckRun(
+        { ...progress, checkRunId: Number(runId) },
+        signal,
+      );
+    } catch (error) {
+      if (signal.aborted) throw error;
       // A completed/deleted run may reject restoration. Do not reuse it.
       runId = null;
     }
   }
   if (runId === null) {
-    const run = await input.github.createCheckRun({
-      ...progress,
-      headSha: input.revision,
-      runName: "AperturePrism AI Review",
-    });
+    const run = await input.github.createCheckRun(
+      {
+        ...progress,
+        headSha: input.revision,
+        runName: "AperturePrism AI Review",
+      },
+      signal,
+    );
     runId = String(run.id);
   }
 
@@ -80,6 +87,9 @@ export async function beginCheckRun(input: BeginCheckRunInput): Promise<void> {
     taskId: input.taskId,
     externalObjectId: runId,
     channel: "check_run",
+    // Reopening/creating a run starts a new lifecycle. Terminal reconciliation
+    // must acknowledge it again, even when the prior task/run was completed.
+    checkRunCompletedAt: null,
   };
   await input.db
     .insert(externalPublications)

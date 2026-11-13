@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import {
   cancelTasks,
   fetchTaskCheckRun,
@@ -48,6 +48,7 @@ export function TaskDetailPage({ id }: { id: string }) {
   const [checkRunDegraded, setCheckRunDegraded] = useState(false);
   const [rerunning, setRerunning] = useState(false);
   const [canceling, setCanceling] = useState(false);
+  const loadVersion = useRef(0);
   const toast = useToast();
 
   /** 失败/已取消任务重新入队。 */
@@ -87,47 +88,64 @@ export function TaskDetailPage({ id }: { id: string }) {
     }
   };
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
+    const version = ++loadVersion.current;
     setLoading(true);
     setError(null);
-    fetchTaskDetail(id)
-      .then(setDetail)
-      .catch((err: unknown) => {
+    // Invalidate the previous poll while a refresh/rerun fetch is in flight.
+    setDetail(null);
+    try {
+      const result = await fetchTaskDetail(id);
+      if (version === loadVersion.current) setDetail(result);
+    } catch (err) {
+      if (version === loadVersion.current) {
         setError(err instanceof Error ? err.message : "failed to load task");
-        setDetail(null);
-      })
-      .finally(() => setLoading(false));
+      }
+    } finally {
+      if (version === loadVersion.current) setLoading(false);
+    }
   }, [id]);
 
-  useEffect(() => load(), [load]);
-
-  // 轮询任务发布的 Check Run 实时状态（每 5s；只在任务存在且任务状态非终态时高频，
-  // 终态任务一次查询即可，避免持续请求 GitHub）。
   useEffect(() => {
-    if (!detail) return;
+    void load();
+    return () => { loadVersion.current += 1; };
+  }, [load]);
+
+  // Scheduler cleanup is asynchronous: a terminal task can still have a pending
+  // Check Run. Poll serially until both are terminal, including degraded reads.
+  useEffect(() => {
+    setCheckRun(null);
+    setCheckRunDegraded(false);
+    if (!detail || detail.id !== id) return;
     const hasCheckRun = (detail.publications ?? []).some(
       (pub) => pub.channel === "check_run",
     );
     if (!hasCheckRun) return;
+    const isTerminal = detail.status === "completed" || detail.status === "failed" || detail.status === "canceled";
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
+      let completed = false;
       try {
         const result = await fetchTaskCheckRun(id);
-        if (result.present && result.checkRun) {
-          setCheckRun(result.checkRun);
-          setCheckRunDegraded(Boolean(result.degraded));
-        } else {
-          setCheckRun(null);
-          setCheckRunDegraded(Boolean(result.degraded));
-        }
+        if (disposed) return;
+        const run = result.present ? result.checkRun ?? null : null;
+        setCheckRun(run);
+        setCheckRunDegraded(Boolean(result.degraded));
+        completed = run?.status === "completed" && !result.degraded;
       } catch {
+        if (disposed) return;
         setCheckRunDegraded(true);
+      }
+      if (!disposed && !(isTerminal && completed)) {
+        timer = setTimeout(() => { void poll(); }, 5000);
       }
     };
     void poll();
-    const isTerminal = detail.status === "completed" || detail.status === "failed" || detail.status === "canceled";
-    if (isTerminal) return;
-    const timer = setInterval(poll, 5000);
-    return () => clearInterval(timer);
+    return () => {
+      disposed = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, [detail, id]);
 
   if (error) {

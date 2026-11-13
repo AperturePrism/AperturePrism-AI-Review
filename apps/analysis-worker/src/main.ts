@@ -30,7 +30,6 @@ import {
 } from "../../../packages/database/src/index.js";
 import {
   ModelInvocationError,
-  type LeasedTask,
   type ModelCandidate,
   type ModelMessage,
   type ModelProviderAdapter,
@@ -104,7 +103,7 @@ import {
   recordAttemptUsage,
   startTask,
 } from "../../../packages/task-engine/src/index.js";
-import { beginCheckRun, checkRunIdempotencyKey } from "./check-run.js";
+import { beginCheckRun } from "./check-run.js";
 import { fetchExternalRepoRulesText } from "./external-repo-rules.js";
 import { createIssueAnalysisHandler } from "./handler.js";
 import { createPrReviewHandler } from "./pr-review-handler.js";
@@ -1373,35 +1372,10 @@ async function main(): Promise<void> {
       });
     },
 
-    finishCheckRun: async (task, review) => {
-      const cfg = await prReviewConfig();
-      if (!cfg.checkRun) return;
-      const { payload, identity } = prIdentity(task);
-      const githubClient = assertGithub(github);
-      const key = checkRunIdempotencyKey(
-        identity.owner,
-        identity.name,
-        payload.subjectNumber,
-        payload.subjectRevision,
-      );
-      const runId = await publicationStore.findExternalObjectId(key);
-      if (runId === null) return;
-      const findings = review.findings.length;
-      const severe = review.findings.some((finding) =>
-        finding.severity === "critical" || finding.severity === "high",
-      );
-      const conclusion = severe || findings > 0 ? "failure" : "success";
-      await githubClient.updateCheckRun({
-        installationId: payload.installationId,
-        owner: identity.owner,
-        name: identity.name,
-        checkRunId: Number(runId),
-        status: "completed",
-        conclusion,
-        title: findings > 0 ? `发现 ${findings} 个问题` : "未发现明显问题",
-        summary: `结论：${review.overallTone}；变更 ${review.changedFileCount} 个文件（+${review.additions}/-${review.deletions}）；findings ${findings}。`,
-      });
-    },
+    // The scheduler finalizes persisted Check Runs only after the task reaches
+    // a committed terminal state. Do not close one here before completion: a
+    // late worker finish can otherwise overwrite cancellation or be lost on a
+    // transient GitHub failure with no durable retry.
 
     recordUsage: async (task, outcome) => {
       const lastAttempt = outcome.attempts.at(-1);
@@ -1469,48 +1443,12 @@ async function main(): Promise<void> {
     return issueHandler(task, signal);
   };
 
-  // issue #103：PR 审核任务最终失败（重试耗尽）时，把 GitHub Check Run 从
-  // "进行中" 收尾为 failure。此前失败路径从不更新 Check Run，PR 检查区会
-  // 永远停在"AI 代码审查进行中"。best-effort：任何失败只记日志，不影响
-  // 任务终态，也不影响循环继续运转。
-  const finalizeCheckRunOnFinalFailure = async (
-    task: LeasedTask,
-    errorCategory: string,
-    errorMessage?: string,
-  ): Promise<void> => {
-    if (task.taskType !== "pr_review") return;
-    const cfg = await prReviewConfig();
-    if (!cfg.checkRun) return;
-    const { payload, identity } = prIdentity(task);
-    if (!github) return;
-    const key = checkRunIdempotencyKey(
-      identity.owner,
-      identity.name,
-      payload.subjectNumber,
-      payload.subjectRevision,
-    );
-    const runId = await publicationStore.findExternalObjectId(key);
-    if (runId === null) return; // 从未创建过 Check Run，无需收尾
-    const detail = (errorMessage ?? errorCategory).slice(0, 200);
-    await github.updateCheckRun({
-      installationId: payload.installationId,
-      owner: identity.owner,
-      name: identity.name,
-      checkRunId: Number(runId),
-      status: "completed",
-      conclusion: "failure",
-      title: "AI 审核失败",
-      summary: `审核未完成（${errorCategory}）：${detail}。修复后可在 WebUI 重新入队。`,
-    });
-  };
-
   await runWorkerLoop({
     engine,
     handler,
     heartbeatIntervalMs,
     idleDelayMs,
     shutdownSignal: shutdown.signal,
-    onFinalFailure: finalizeCheckRunOnFinalFailure,
     onEvent: (event) => {
       if (event.type === "idle") return;
       const taskLogger =

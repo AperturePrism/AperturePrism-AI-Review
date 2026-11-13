@@ -10,7 +10,7 @@
 | `analysis-worker` | 同上（analysis-worker） | 领取并执行 Issue/PR 任务 |
 | `index-worker` | 同上（index-worker） | 定时索引仓库 Issue（内容哈希去重） |
 | `scan-worker` | 同上（scan-worker） | 定时扫描已安装仓库并自动建分析任务（WebUI「仓库扫描」） |
-| `scheduler` | 同上（scheduler） | 每 10s 回收过期 lease、释放到期 retry |
+| `scheduler` | 同上（scheduler） | 每 10s 回收过期 lease、释放到期 retry，并补偿终态 PR 的 Check Run 收尾 |
 | `postgres` | pgvector/pgvector:pg16 | 业务数据 + `issue_documents` 向量 |
 | `redis` | redis:7-alpine | SSE 广播与任务事件分发 |
 
@@ -139,7 +139,9 @@ docker compose --env-file .env.production -f docker/docker-compose.prod.yml \
 
 ## 7. 故障恢复
 
-- **Worker 崩溃**：lease 在 `lease_duration_ms`（默认 60s）后过期，由 scheduler 回收回 `queued`，无需人工介入。
+- **Worker 崩溃**：lease 在 `lease_duration_ms`（默认 60s）后过期。未耗尽 `maxAttempts` 时 scheduler 回收回 `queued`；达到上限则记为 `failed` / `lease_expired`，不再无限重试。
+- **PR 一直显示正在审核中**：先确认迁移 `0023_check_run_completion` 已执行、scheduler 正常运行且能读取与 analysis-worker 相同的 GitHub App 凭据（WebUI 保存的加密凭据优先，env 私钥文件兜底）。终态 `completed` / `failed` / `canceled` 的已记录 Check Run 由 scheduler 每轮最多补偿 20 个，每个 GitHub 操作总预算 15s；与 lease 回收异步隔离，不会阻塞任务维护。网络、权限或隐藏资源的 404 均保留待收尾状态并记录 `Check Run completion pending; will retry`，修复凭据后自动重试，无需重新消耗模型分析。已完成的 GitHub 检查保留其既有结论；缺少有效结果的完成任务以 neutral 收尾，不伪造通过。关闭 `pr_check_run` 只影响新检查创建，不阻止已有检查结束。
+- **升级说明**：先停应用并执行 `node scripts/migrate.mjs`，再启动同版本 API、analysis-worker、scheduler。迁移只新增可空确认时间与索引；历史 publication 初始待确认，scheduler 会查询并保留已完成检查，修复仍在运行的终态检查。手动重新入队会原子清空确认时间。新创建检查若在 GitHub 成功后、publication 首次落库前进程崩溃，仍属于外部写入与数据库不可原子提交的既有限制，不能保证发现未记录的远端检查。
 - **Redis 故障**：API 的 SSE 中继降级为只心跳，任务数据不丢失（PostgreSQL 为准）；恢复后自动重连。
 - **GitHub 限流**：`github-adapter` 已对 `authentication_failed` 做一次性重试；429/5xx 由 worker 重试策略处理。
 - **索引过旧**：分析评论中的相关 Issue 段落会因索引不可用自动跳过，主流程不阻塞。

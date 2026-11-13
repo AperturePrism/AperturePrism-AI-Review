@@ -3,6 +3,7 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as databaseSchema from "../../../packages/database/src/schema.js";
 import {
   analysisTasks,
+  externalPublications,
   taskAttempts,
   taskEvents,
 } from "../../../packages/database/src/schema.js";
@@ -296,21 +297,29 @@ export async function recoverExpiredLeases(
   now = new Date(),
 ): Promise<number> {
   return db.transaction(async (tx) => {
+    // A crashed worker consumes its attempt just like an explicit failure.
+    // Decide atomically so concurrent sweeps cannot requeue an exhausted task.
+    const exhausted = sql`${analysisTasks.attemptCount} >= ${analysisTasks.maxAttempts}`;
     const recovered = await tx
       .update(analysisTasks)
       .set({
-        status: "queued",
+        status: sql`case when ${exhausted} then 'failed'::task_status else 'queued'::task_status end`,
         leaseOwner: null,
         leaseExpiresAt: null,
         heartbeatAt: null,
-        nextAttemptAt: now,
+        nextAttemptAt: sql`case when ${exhausted} then ${analysisTasks.nextAttemptAt} else ${now.toISOString()}::timestamptz end`,
+        lastErrorCategory: sql`case when ${exhausted} then 'lease_expired' else ${analysisTasks.lastErrorCategory} end`,
         updatedAt: now,
       })
       .where(
         sql`${analysisTasks.status} in ('leased', 'running', 'publishing')
           and ${analysisTasks.leaseExpiresAt} <= ${now.toISOString()}::timestamptz`,
       )
-      .returning({ id: analysisTasks.id });
+      .returning({
+        id: analysisTasks.id,
+        status: analysisTasks.status,
+        attemptNumber: analysisTasks.attemptCount,
+      });
 
     for (const task of recovered) {
       await tx
@@ -322,8 +331,20 @@ export async function recoverExpiredLeases(
         );
       await tx.insert(taskEvents).values({
         taskId: task.id,
-        eventType: taskLeaseRecoveredEventType,
-        data: { taskId: task.id, recoveredAt: now.toISOString() },
+        eventType:
+          task.status === "failed"
+            ? taskFailedEventType
+            : taskLeaseRecoveredEventType,
+        data: {
+          taskId: task.id,
+          recoveredAt: now.toISOString(),
+          ...(task.status === "failed"
+            ? {
+                errorCategory: "lease_expired",
+                attemptNumber: task.attemptNumber,
+              }
+            : {}),
+        },
       });
     }
     return recovered.length;
@@ -639,6 +660,15 @@ export async function resetTaskToQueued(
       )
       .returning({ id: analysisTasks.id });
     if (updated.length === 0) return false;
+    // Reopening a task invalidates the previous Check Run completion ack.
+    // Keep task -> publication lock order consistent with reconciliation.
+    await tx
+      .update(externalPublications)
+      .set({ checkRunCompletedAt: null })
+      .where(
+        sql`${externalPublications.taskId} = ${input.taskId}
+          and ${externalPublications.channel} = 'check_run'`,
+      );
     // 重跑是全新执行：清掉旧 attempts，避免 worker 重新领取时插入
     // attempt_number=1 与历史记录撞唯一约束 (task_id, attempt_number)。
     await tx.delete(taskAttempts).where(eq(taskAttempts.taskId, input.taskId));

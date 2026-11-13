@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../../packages/database/src/client.js";
 import {
   analysisTasks,
+  externalPublications,
   repositories,
   taskAttempts,
   taskEvents,
@@ -18,6 +19,8 @@ import {
   createAnalysisTask,
   failTask,
   recordAttemptUsage,
+  recoverExpiredLeases,
+  resetTaskToQueued,
   startTask,
 } from "./index.js";
 
@@ -36,6 +39,9 @@ describeIntegration("task state PostgreSQL integration", () => {
   afterAll(async () => {
     if (!client) return;
     await client.sql.begin(async (sql) => {
+      await sql`delete from external_publications where task_id in (
+        select id from analysis_tasks where dedupe_key like ${`${prefix}%`}
+      )`;
       await sql`delete from task_events where task_id in (
         select id from analysis_tasks where dedupe_key like ${`${prefix}%`}
       )`;
@@ -262,6 +268,178 @@ describeIntegration("task state PostgreSQL integration", () => {
         reason: "terminal task must remain failed",
       }),
     ).toBe(false);
+  });
+
+  it.each(
+    (["leased", "running", "publishing"] as const).flatMap((status) =>
+      [1, 3, 4].map((attemptCount) => ({ status, attemptCount })),
+    ),
+  )(
+    "recovers expired $status attempt $attemptCount according to its budget exactly once",
+    async ({ status, attemptCount }) => {
+      const now = new Date("2000-01-01T12:00:00.000Z");
+      const previousAttemptAt = new Date(now.getTime() - 120_000);
+      const expiredAt = new Date(now.getTime() - 60_000);
+      const payload = { revision: "current" };
+      const pendingPayload = { revision: "pending" };
+      const exhausted = attemptCount >= 3;
+      const [created] = await client.db
+        .insert(analysisTasks)
+        .values({
+          taskType: "pr_review",
+          subjectRevision: "revision-lease-recovery",
+          policyVersion: "policy-v1",
+          dedupeKey: `${prefix}:recovery:${status}:${attemptCount}`,
+          status,
+          payload,
+          pendingPayload,
+          attemptCount,
+          maxAttempts: 3,
+          leaseOwner: "worker-expired",
+          leaseExpiresAt: expiredAt,
+          heartbeatAt: previousAttemptAt,
+          nextAttemptAt: previousAttemptAt,
+          lastErrorCategory: "previous_failure",
+        })
+        .returning({ id: analysisTasks.id });
+      const taskId = created!.id;
+      await client.db.insert(taskAttempts).values({
+        taskId,
+        attemptNumber: attemptCount,
+        workerId: "worker-expired",
+        startedAt: previousAttemptAt,
+      });
+
+      expect(await recoverExpiredLeases(client.db, now)).toBeGreaterThanOrEqual(
+        1,
+      );
+      expect(await recoverExpiredLeases(client.db, now)).toBe(0);
+      const [task] = await client.db
+        .select()
+        .from(analysisTasks)
+        .where(eq(analysisTasks.id, taskId));
+      const [attempt] = await client.db
+        .select()
+        .from(taskAttempts)
+        .where(eq(taskAttempts.taskId, taskId));
+      const events = await client.db
+        .select({ eventType: taskEvents.eventType, data: taskEvents.data })
+        .from(taskEvents)
+        .where(eq(taskEvents.taskId, taskId));
+
+      expect(task).toMatchObject({
+        status: exhausted ? "failed" : "queued",
+        attemptCount,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        nextAttemptAt: exhausted ? previousAttemptAt : now,
+        lastErrorCategory: exhausted ? "lease_expired" : "previous_failure",
+        payload,
+        pendingPayload,
+        updatedAt: now,
+      });
+      expect(attempt).toMatchObject({
+        finishedAt: now,
+        errorCategory: "lease_expired",
+      });
+      expect(events).toEqual([
+        {
+          eventType: exhausted ? "task.failed" : "task.lease_recovered",
+          data: {
+            taskId,
+            recoveredAt: now.toISOString(),
+            ...(exhausted
+              ? { errorCategory: "lease_expired", attemptNumber: attemptCount }
+              : {}),
+          },
+        },
+      ]);
+    },
+  );
+
+  it("does not recover fresh active leases, inactive tasks, or missing leases", async () => {
+    const now = new Date("2000-01-01T12:00:00.000Z");
+    const freshAt = new Date(now.getTime() + 60_000);
+    const expiredAt = new Date(now.getTime() - 60_000);
+    const tasks = await client.db
+      .insert(analysisTasks)
+      .values(
+        (
+          [
+            { status: "leased", leaseExpiresAt: freshAt },
+            { status: "running", leaseExpiresAt: freshAt },
+            { status: "publishing", leaseExpiresAt: freshAt },
+            { status: "running", leaseExpiresAt: null },
+            { status: "queued", leaseExpiresAt: expiredAt },
+            { status: "retry_wait", leaseExpiresAt: expiredAt },
+            { status: "completed", leaseExpiresAt: expiredAt },
+            { status: "failed", leaseExpiresAt: expiredAt },
+            { status: "canceled", leaseExpiresAt: expiredAt },
+          ] as const
+        ).map((entry, index) => ({
+          ...entry,
+          taskType: "pr_review",
+          subjectRevision: "revision-unchanged",
+          policyVersion: "policy-v1",
+          dedupeKey: `${prefix}:recovery-unchanged:${index}`,
+          payload: {},
+          attemptCount: 3,
+          maxAttempts: 3,
+        })),
+      )
+      .returning();
+
+    expect(await recoverExpiredLeases(client.db, now)).toBe(0);
+    for (const expected of tasks) {
+      const [task] = await client.db
+        .select()
+        .from(analysisTasks)
+        .where(eq(analysisTasks.id, expected.id));
+      const events = await client.db
+        .select()
+        .from(taskEvents)
+        .where(eq(taskEvents.taskId, expected.id));
+      expect(task).toEqual(expected);
+      expect(events).toEqual([]);
+    }
+  });
+
+  it("atomically clears only Check Run completion acknowledgement when rerunning", async () => {
+    const created = await createAnalysisTask(client.db, {
+      taskType: "pr_review",
+      subjectRevision: "revision-rerun",
+      policyVersion: "policy-v1",
+      dedupeKey: `${prefix}:rerun-ack`,
+      payload: {},
+    });
+    const taskId = created.task.id;
+    const now = new Date();
+    await cancelTask(client.db, { taskId, reason: "test rerun", now });
+    const publications = await client.db
+      .insert(externalPublications)
+      .values(
+        ["check_run", "review", "comment"].map((channel) => ({
+          taskId,
+          channel,
+          idempotencyKey: `${prefix}:rerun:${channel}`,
+          externalObjectId: `external-${channel}`,
+          checkRunCompletedAt: now,
+        })),
+      )
+      .returning();
+
+    expect(await resetTaskToQueued(client.db, { taskId, now })).toBe(true);
+    for (const publication of publications) {
+      const [updated] = await client.db
+        .select()
+        .from(externalPublications)
+        .where(eq(externalPublications.id, publication.id));
+      expect(updated).toEqual({
+        ...publication,
+        checkRunCompletedAt: publication.channel === "check_run" ? null : now,
+      });
+    }
   });
 
   it("cancelSubjectTasks cancels a subject's active tasks but leaves others", async () => {
