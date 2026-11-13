@@ -43,7 +43,11 @@ function toWireMessage(message: ModelMessage): Record<string, unknown> {
     role: message.role,
     content: toWireContent(message),
   };
-  if (message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
+  if (
+    message.role === "assistant" &&
+    message.toolCalls &&
+    message.toolCalls.length > 0
+  ) {
     base.tool_calls = message.toolCalls.map((call) => ({
       id: call.id,
       type: "function",
@@ -72,7 +76,9 @@ function toWireTools(
       function: {
         name: tool.name,
         description: tool.description,
-        ...(tool.parameters === undefined ? {} : { parameters: tool.parameters }),
+        ...(tool.parameters === undefined
+          ? {}
+          : { parameters: tool.parameters }),
       },
     })),
     tool_choice: toolChoice ?? "auto",
@@ -85,11 +91,7 @@ type ChatCompletionResponse = {
       content?: unknown;
       /** reasoning 模型（deepseek-v4-pro 等）可能只回 reasoning_content 而 content 为空。 */
       reasoning_content?: unknown;
-      tool_calls?: {
-        id?: unknown;
-        type?: unknown;
-        function?: { name?: unknown; arguments?: unknown };
-      }[];
+      tool_calls?: unknown;
     };
   }[];
   usage?: {
@@ -178,7 +180,8 @@ export function createOpenAICompatibleAdapter(
               ? {}
               : { max_tokens: request.maxOutputTokens }),
             ...(request.temperature === undefined
-              ? {} : { temperature: request.temperature }),
+              ? {}
+              : { temperature: request.temperature }),
             // response_format is deliberately NOT sent. The newapi gateway
             // times out / 401s / 429s on any request carrying
             // `response_format: json_object` while the same prompt without it
@@ -228,16 +231,55 @@ export function createOpenAICompatibleAdapter(
         );
       }
 
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      )
+        throw new ModelInvocationError(
+          "invalid_output",
+          "provider response was not a completion object",
+        );
       const message = parsed.choices?.[0]?.message;
 
-      const toolCalls = Array.isArray(message?.tool_calls)
-        ? message.tool_calls
-            .map((call) => ({
-              id: typeof call.id === "string" ? call.id : "",
-              name: typeof call.function?.name === "string" ? call.function.name : "",
-              arguments: typeof call.function?.arguments === "string" ? call.function.arguments : "{}",
-            }))
-            .filter((call) => call.name !== "")
+      const rawCalls = message?.tool_calls;
+      if (
+        rawCalls !== undefined &&
+        rawCalls !== null &&
+        !Array.isArray(rawCalls)
+      )
+        throw new ModelInvocationError(
+          "invalid_output",
+          "provider tool calls were not an array",
+        );
+      const toolCalls = Array.isArray(rawCalls)
+        ? rawCalls.map((call: unknown) => {
+            const invalid = () =>
+              new ModelInvocationError(
+                "invalid_output",
+                "provider returned a malformed tool call",
+              );
+            if (typeof call !== "object" || call === null) throw invalid();
+            const entry = call as { id?: unknown; function?: unknown };
+            if (
+              typeof entry.id !== "string" ||
+              entry.id.trim().length === 0 ||
+              typeof entry.function !== "object" ||
+              entry.function === null
+            )
+              throw invalid();
+            const fn = entry.function as {
+              name?: unknown;
+              arguments?: unknown;
+            };
+            if (
+              typeof fn.name !== "string" ||
+              fn.name.trim().length === 0 ||
+              typeof fn.arguments !== "string"
+            )
+              throw invalid();
+            return { id: entry.id, name: fn.name, arguments: fn.arguments };
+          })
         : undefined;
 
       // content 可能是字符串、null（纯工具调用）或数组（OpenAI 多模态分段）。
