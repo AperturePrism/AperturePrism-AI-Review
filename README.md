@@ -75,6 +75,23 @@ AperturePrism 把「AI 代码审查」做成了一条可落地的产品链路，
 | 生产发布 | GitHub Actions CI 构建全部镜像并推送 GHCR；`docker compose up -d` 直接拉取部署 |
 | 运维 | 一键安装脚本、Docker 全栈打包、迁移/备份脚本、健康检查、SSE 实时事件 |
 
+## GitHub 评论指令
+
+在已安装仓库的 Issue / PR 评论区发送以下指令即可直接触发（支持 `/apertureprism <指令>` 命名空间写法，避免与其他 Bot 冲突）：
+
+| 指令 | 作用 | 适用对象 |
+| --- | --- | --- |
+| `/analyze` | 重新触发 Issue 分析（使用最新标题与正文） | Issue / PR |
+| `/review` | 立即触发 PR 代码审查（以当前 head commit 为准） | 仅 PR |
+| `/help` | 回复可用指令说明 | Issue / PR |
+
+规则：
+
+- 只解析评论中**第一行非空的、非代码块内容**；引用块写法（`> /analyze`）同样有效，代码块内以及其它 Bot 的斜杠命令会被忽略；
+- Bot 自己发布的评论不会触发指令，避免回复循环；
+- 触发后 Bot 会回一条确认评论（含任务 ID 前 8 位），完成后结果以评论 / Review 形式发布；
+- `/review` 依赖 GitHub App 读取 PR 最新提交，未配置 App 或在非 PR 评论中使用时会收到对应提示。
+
 ## 系统架构
 
 ```text
