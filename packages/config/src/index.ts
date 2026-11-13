@@ -73,6 +73,7 @@ const environmentSchema = z.object({
    * JSON object mapping model provider names to OpenAI-compatible base URLs,
    * e.g. {"openai-compatible":"https://models.example/v1"}. Used by the
    * analysis worker to build adapters for the candidates in the role policy.
+   * Entries must be absolute HTTP(S) URLs (local HTTP gateways are supported).
    */
   MODEL_PROVIDER_BASE_URLS: z
     .string()
@@ -85,13 +86,27 @@ const environmentSchema = z.object({
             typeof parsed === "object" &&
             parsed !== null &&
             !Array.isArray(parsed) &&
-            Object.values(parsed).every((entry) => typeof entry === "string")
+            Object.values(parsed).every((entry) => {
+              if (typeof entry !== "string") return false;
+              try {
+                const url = new URL(entry);
+                return (
+                  (url.protocol === "http:" || url.protocol === "https:") &&
+                  url.hostname.length > 0
+                );
+              } catch {
+                return false;
+              }
+            })
           );
         } catch {
           return false;
         }
       },
-      { message: "MODEL_PROVIDER_BASE_URLS must be a JSON object of strings" },
+      {
+        message:
+          "MODEL_PROVIDER_BASE_URLS must be a JSON object of HTTP(S) base URLs",
+      },
     )
     .optional(),
   /** Base64-encoded 32-byte key that wraps stored provider credentials. */
