@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { IssueContext } from "./context.js";
 import { collectIssueImages, extractImageUrls } from "./images.js";
 
@@ -84,5 +84,48 @@ describe("collectIssueImages", () => {
       fetchImpl: async () => bytesResponse(PNG_HEADER),
     });
     expect(result.images).toHaveLength(2);
+  });
+});
+
+describe("image response body deadline", () => {
+  it("keeps the timeout active until the response body is consumed", async () => {
+    vi.useFakeTimers();
+    try {
+      let downloadSignal: AbortSignal | undefined;
+      let readingBody = false;
+      const resultPromise = collectIssueImages(
+        ctx("![p](https://x.com/stalled.png)"),
+        {
+          limits: { fetchTimeoutMs: 30, downloadAttempts: 1 },
+          fetchImpl: async (_url, init) => {
+            downloadSignal = init?.signal;
+            return {
+              ok: true,
+              arrayBuffer: () => {
+                readingBody = true;
+                return new Promise<ArrayBuffer>((_resolve, reject) => {
+                  init?.signal?.addEventListener(
+                    "abort",
+                    () =>
+                      reject(
+                        new DOMException("download timed out", "AbortError"),
+                      ),
+                    { once: true },
+                  );
+                });
+              },
+            } as Response;
+          },
+        },
+      );
+      await vi.advanceTimersByTimeAsync(30);
+      expect(readingBody).toBe(true);
+      expect(downloadSignal?.aborted).toBe(true);
+      const result = await resultPromise;
+      expect(result.images[0]?.image_url.url).toBe("https://x.com/stalled.png");
+      expect(result.degraded.join(",")).toContain("image_via_url:fetch_failed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

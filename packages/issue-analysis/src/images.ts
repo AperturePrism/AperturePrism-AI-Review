@@ -124,17 +124,16 @@ export async function collectIssueImages(
       const timer = setTimeout(() => controller.abort(), limits.fetchTimeoutMs);
       let response: Response;
       try {
-        try {
-          response = await fetchImpl(url, { signal: controller.signal });
-        } finally {
-          clearTimeout(timer);
-        }
+        response = await fetchImpl(url, { signal: controller.signal });
         if (response.ok) {
           buffer = new Uint8Array(await response.arrayBuffer());
           downloadResult = "ok";
         }
       } catch {
         // transient; retry
+      } finally {
+        // fetch resolves at headers; keep the deadline while reading the body.
+        clearTimeout(timer);
       }
     }
     if (!buffer) {
