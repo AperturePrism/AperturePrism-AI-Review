@@ -7,6 +7,12 @@
 **提交PR请在群内反馈 作者在上大学 没那么多时间天天盯着GitHub看**  
 ---
 
+## 审查工作台与 HOP 重构
+
+API 和 worker 已按实际业务拆分，保留原接口与数据。新增审查基线、到期抑制、质量门禁、风险与测试影响、SARIF 报告、真实队列批次、发现处置与反馈、预算和归档；自动化支持可解释规则、审批和执行恢复，离线实验台用于对比审查结果。
+
+运行方式、代码位置、持久卷和升级说明见 [工作流说明](docs/HOP-REFACTOR.md)。新增工具：`npm run workbench -- --help`、`npm run review:evaluate -- --help`、`npm run review:automate -- --help`。构建后可用 `npm run verify:runtime` 核查最终生产模块。
+
 ## 目录
 
 - [项目简介](#项目简介)

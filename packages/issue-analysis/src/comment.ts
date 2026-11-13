@@ -3,6 +3,8 @@ import {
   type GradedIssueAnalysis,
 } from "../../../packages/contracts/src/index.js";
 import type { RelatedIssueRow } from "../../../packages/duplicate-detection/src/index.js";
+import { renderIssueTriage, type IssueTriage } from "./triage.js";
+import type { EvidenceAudit } from "./evidence.js";
 import { CODE_ACCESS_UNKNOWN_PATH } from "./prompt.js";
 
 const severityLabels: Readonly<Record<string, string>> = {
@@ -43,7 +45,8 @@ export function buildPlaceholderComment(): string {
 
 /** 失败原因到用户可读说明的映射；未知分类只说明结果，不编造原因。 */
 const failureReasons: Readonly<Record<string, string>> = {
-  invalid_output: "模型返回的结果不符合约定格式，已自动重试若干次仍未通过校验。",
+  invalid_output:
+    "模型返回的结果不符合约定格式，已自动重试若干次仍未通过校验。",
   handler_error: "分析过程中出现异常，可能是模型服务暂时不可用。",
   github_not_found: "读取该 Issue 时 GitHub 返回资源不存在。",
   github_auth_failed: "GitHub 授权失败，无法读取该 Issue。",
@@ -56,7 +59,8 @@ const failureReasons: Readonly<Record<string, string>> = {
  */
 export function buildFailureComment(errorCategory: string): string {
   const reason =
-    failureReasons[errorCategory] ?? "分析未能完成，具体原因已记录在任务事件中。";
+    failureReasons[errorCategory] ??
+    "分析未能完成，具体原因已记录在任务事件中。";
   return [
     "## 🤖 AperturePrism 分析未完成",
     "",
@@ -69,7 +73,10 @@ export function buildFailureComment(errorCategory: string): string {
 }
 
 export function buildIssueAnalysisComment(
-  analysis: GradedIssueAnalysis,
+  analysis: GradedIssueAnalysis & {
+    triage?: IssueTriage;
+    evidenceAudit?: EvidenceAudit;
+  },
   related: readonly RelatedIssueRow[] = [],
 ): string {
   const { result, adjustments } = analysis;
@@ -110,9 +117,7 @@ export function buildIssueAnalysisComment(
       const where = item.locator ? ` \`${item.locator}\`` : "";
       // 未读取源码时的占位路径不算真实代码位置，不包代码框（避免被误认为真实文件）。
       const path =
-        item.path === CODE_ACCESS_UNKNOWN_PATH
-          ? item.path
-          : `\`${item.path}\``;
+        item.path === CODE_ACCESS_UNKNOWN_PATH ? item.path : `\`${item.path}\``;
       lines.push(`- ${path}${where}：${item.change}`);
     }
   }
@@ -148,7 +153,11 @@ export function buildIssueAnalysisComment(
       .map((login) => login.trim())
       .filter((login) => login.length > 0);
     if (assignees.length > 0) {
-      lines.push("", "### 建议指派人", assignees.map((login) => `@${login}`).join(" "));
+      lines.push(
+        "",
+        "### 建议指派人",
+        assignees.map((login) => `@${login}`).join(" "),
+      );
     }
   }
 
@@ -180,6 +189,14 @@ export function buildIssueAnalysisComment(
       );
     }
   }
+
+  if (analysis.evidenceAudit && analysis.evidenceAudit.unverifiedCount > 0) {
+    lines.push(
+      "",
+      `> 引用核验：${analysis.evidenceAudit.verifiedCount} 条可在本次输入中定位，${analysis.evidenceAudit.unverifiedCount} 条未定位；请人工核对。`,
+    );
+  }
+  if (analysis.triage) lines.push("", renderIssueTriage(analysis.triage));
 
   const confidence = result.confidence;
   lines.push(

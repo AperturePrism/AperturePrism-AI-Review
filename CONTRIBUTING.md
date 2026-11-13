@@ -34,7 +34,7 @@ npm run lint        # ESLint
 npm run format      # Prettier 统一格式
 ```
 
-`apps/web` 是独立 workspace，单独验证：
+`apps/web` 是独立 workspace。先在仓库根目录执行 `npm ci && npm run build`，准备真实 HTTP 集成测试使用的后端依赖与编译工具，再单独验证网页：
 
 ```bash
 cd apps/web && npm ci && npm run typecheck && npm test

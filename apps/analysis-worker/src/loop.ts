@@ -32,9 +32,15 @@ export type FailOutcome = {
   nextAttemptAt: Date | null;
 };
 
+/** 当前尝试在真正发布前向队列确认所有权；由循环提供，业务不能伪造租约。 */
+export type TaskExecution = {
+  beginPublishing: () => Promise<boolean>;
+};
+
 export type TaskHandler = (
   task: LeasedTask,
   signal: AbortSignal,
+  execution?: TaskExecution,
 ) => Promise<WorkerTaskOutcome>;
 
 export type WorkerLoopOptions = {
@@ -164,6 +170,8 @@ export async function runOnce(options: WorkerLoopOptions): Promise<boolean> {
   if (shutdownSignal.aborted) controller.abort();
   shutdownSignal.addEventListener("abort", abortForShutdown, { once: true });
   let leaseLost = false;
+  let publicationStarted = false;
+  let publicationPending: Promise<boolean> | null = null;
   const stopHeartbeat = startHeartbeat(
     engine,
     task,
@@ -173,13 +181,31 @@ export async function runOnce(options: WorkerLoopOptions): Promise<boolean> {
       controller.abort();
     },
   );
+  const execution: TaskExecution = {
+    async beginPublishing() {
+      if (controller.signal.aborted) return false;
+      if (publicationStarted) return true;
+      // 同一个尝试可能有多个发布入口；并行调用也只推进一次数据库状态。
+      publicationPending ??= engine.beginPublishing(task).then((held) => {
+        if (held) publicationStarted = true;
+        else {
+          leaseLost = true;
+          controller.abort();
+        }
+        return held;
+      });
+      return publicationPending;
+    },
+  };
 
   try {
-    const result = await handler(task, controller.signal);
+    controller.signal.throwIfAborted();
+    const result = await handler(task, controller.signal, execution);
     if (leaseLost) {
       onEvent?.({ type: "lease_lost", taskId: task.id });
       return true;
     }
+    controller.signal.throwIfAborted();
 
     if (result.outcome === "failed") {
       const failOutcome = await engine.fail(
@@ -187,7 +213,13 @@ export async function runOnce(options: WorkerLoopOptions): Promise<boolean> {
         result.errorCategory,
         result.errorMessage,
       );
-      await notifyFinalFailure(options, task, result.errorCategory, failOutcome, result.errorMessage);
+      await notifyFinalFailure(
+        options,
+        task,
+        result.errorCategory,
+        failOutcome,
+        result.errorMessage,
+      );
       onEvent?.({
         type: "failed",
         taskId: task.id,
@@ -199,8 +231,9 @@ export async function runOnce(options: WorkerLoopOptions): Promise<boolean> {
       return true;
     }
 
-    // Publishing is a distinct state so a crash mid-publish stays recoverable.
-    if (!(await engine.beginPublishing(task))) {
+    controller.signal.throwIfAborted();
+    // 旧的纯计算 handler 没有发布副作用，仍兼容它们在返回后推进状态。
+    if (!publicationStarted && !(await execution.beginPublishing())) {
       onEvent?.({ type: "lease_lost", taskId: task.id });
       return true;
     }
@@ -211,6 +244,10 @@ export async function runOnce(options: WorkerLoopOptions): Promise<boolean> {
     onEvent?.({ type: "completed", taskId: task.id });
     return true;
   } catch (error) {
+    if (leaseLost) {
+      onEvent?.({ type: "lease_lost", taskId: task.id });
+      return true; // 原尝试已不拥有任务，不能再记失败或触发失败收尾。
+    }
     const errorCategory =
       controller.signal.aborted && !leaseLost
         ? "canceled"
@@ -222,7 +259,13 @@ export async function runOnce(options: WorkerLoopOptions): Promise<boolean> {
     // task_events 只剩分类码，事后无法判断失败原因。
     if (!leaseLost) {
       const failOutcome = await engine.fail(task, errorCategory, errorText);
-      await notifyFinalFailure(options, task, errorCategory, failOutcome, errorText);
+      await notifyFinalFailure(
+        options,
+        task,
+        errorCategory,
+        failOutcome,
+        errorText,
+      );
     }
     onEvent?.({
       type: "failed",

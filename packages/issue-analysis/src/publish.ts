@@ -27,6 +27,7 @@ export type PublishIssueCommentInput = {
   /** Stable across retries so a retried task never posts a second comment. */
   idempotencyKey: string;
   body: string;
+  signal?: AbortSignal;
 };
 
 export type PublishIssueCommentResult = {
@@ -43,29 +44,38 @@ export type PublishIssueCommentResult = {
 export async function publishIssueComment(
   input: PublishIssueCommentInput,
 ): Promise<PublishIssueCommentResult> {
+  input.signal?.throwIfAborted();
   const externalObjectId = await input.store.findExternalObjectId(
     input.idempotencyKey,
   );
 
   if (externalObjectId) {
-    const updated = await input.github.updateIssueComment({
-      installationId: input.installationId,
-      owner: input.owner,
-      name: input.name,
-      commentId: Number(externalObjectId),
-      body: input.body,
-    });
+    input.signal?.throwIfAborted();
+    const updated = await input.github.updateIssueComment(
+      {
+        installationId: input.installationId,
+        owner: input.owner,
+        name: input.name,
+        commentId: Number(externalObjectId),
+        body: input.body,
+      },
+      input.signal,
+    );
     await input.store.touch(input.idempotencyKey);
     return { commentId: updated.id, created: false };
   }
 
-  const created = await input.github.createIssueComment({
-    installationId: input.installationId,
-    owner: input.owner,
-    name: input.name,
-    number: input.issueNumber,
-    body: input.body,
-  });
+  input.signal?.throwIfAborted();
+  const created = await input.github.createIssueComment(
+    {
+      installationId: input.installationId,
+      owner: input.owner,
+      name: input.name,
+      number: input.issueNumber,
+      body: input.body,
+    },
+    input.signal,
+  );
   await input.store.insert({
     taskId: input.taskId,
     idempotencyKey: input.idempotencyKey,

@@ -1,3 +1,9 @@
+import { UserIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/grants", label: "仓库授权", group: "data", order: 41, icon: PageIcon, render: () => <GrantsPage /> }];
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   bumpCache,

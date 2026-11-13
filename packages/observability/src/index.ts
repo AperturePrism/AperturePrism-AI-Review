@@ -1,4 +1,9 @@
-import pino, { type Logger, type LoggerOptions } from "pino";
+import pino, {
+  type DestinationStream,
+  type Logger,
+  type LoggerOptions,
+} from "pino";
+import { redactDiagnosticValue } from "./redaction.js";
 
 const sensitivePaths = [
   "authorization",
@@ -35,12 +40,27 @@ export type Correlation = {
   attemptId?: string;
 };
 
-export function createLogger(level: LoggerOptions["level"] = "info"): Logger {
-  return pino({
-    level,
-    redact: { paths: sensitivePaths, censor: "[REDACTED]" },
-    base: { service: "apertureprism" },
-  });
+export function createLogger(
+  level: LoggerOptions["level"] = "info",
+  destination?: DestinationStream,
+): Logger {
+  return pino(
+    {
+      level,
+      hooks: {
+        logMethod(args, method) {
+          // 所有深度先做同一套脱敏；pino 的 paths 再保护已知的顶层字段。
+          const safeArgs = args.map((argument) =>
+            redactDiagnosticValue(argument),
+          );
+          Reflect.apply(method, this, safeArgs);
+        },
+      },
+      redact: { paths: sensitivePaths, censor: "[REDACTED]" },
+      base: { service: "apertureprism" },
+    },
+    destination,
+  );
 }
 
 export function withCorrelation(
@@ -56,4 +76,11 @@ export function startTimer(): () => number {
 }
 
 export { MetricsRegistry, metrics } from "./metrics.js";
-export type { DurationBucket, MetricsSnapshot } from "./metrics.js";
+export type {
+  DurationBucket,
+  DurationSummary,
+  MetricsOptions,
+  MetricsSnapshot,
+} from "./metrics.js";
+export { redactDiagnosticText, redactDiagnosticValue } from "./redaction.js";
+export type { RedactionOptions } from "./redaction.js";

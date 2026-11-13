@@ -70,10 +70,15 @@ services:
       AP_VERIFY: ${AP_VERIFY:-0}
       # OAuth 回调地址（反代/TLS 终结时需显式指定，避免按 Host 推导错误）
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-}
+      # 工作台和 worker 共用持久目录；容器更新不能清空基线、反馈和预算。
+      WORKBENCH_DATA_DIRECTORY: /var/lib/apertureprism/workbench
+      AUTOMATION_DATA_DIRECTORY: /var/lib/apertureprism/automation
     volumes:
       # 供在线更新（POST /update/apply）驱动 docker compose；只读、脚本白名单限定本项目
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${GITHUB_APP_KEY_MOUNT:-/opt/apertureprism/github-app.pem}:/opt/apertureprism/github-app.pem:ro
+      - apertureprism-workbench:/var/lib/apertureprism/workbench
+      - apertureprism-automation:/var/lib/apertureprism/automation
     # API 只绑定 loopback：Web 走 docker 内部网络 (http://api:30001) 反代，
     # 宿主端口仅供本机/内网运维直连，避免公网绕过 nginx 直接改配置/密钥。
     ports:
@@ -95,8 +100,12 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
+      WORKBENCH_DATA_DIRECTORY: /var/lib/apertureprism/workbench
+      AUTOMATION_DATA_DIRECTORY: /var/lib/apertureprism/automation
     volumes:
       - ${GITHUB_APP_KEY_MOUNT:-/opt/apertureprism/github-app.pem}:/opt/apertureprism/github-app.pem:ro
+      - apertureprism-workbench:/var/lib/apertureprism/workbench
+      - apertureprism-automation:/var/lib/apertureprism/automation
     depends_on:
       postgres:
         condition: service_healthy
@@ -202,3 +211,5 @@ services:
 volumes:
   apertureprism-postgres:
   apertureprism-redis:
+  apertureprism-workbench:
+  apertureprism-automation:

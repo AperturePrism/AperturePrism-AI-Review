@@ -1,3 +1,9 @@
+import { TagIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/labels", label: "标签配置", group: "data", order: 47, icon: PageIcon, render: () => <LabelsPage /> }];
+
 import { useCallback, useEffect, useState } from "react";
 import {
   deleteLabelRule,

@@ -20,6 +20,32 @@ jobs:
     runs-on: ubuntu-latest
     # 防止 runner 挂死占用（lint/typecheck/test 单轮应在 15 分钟内完成）。
     timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: review_test
+          POSTGRES_PASSWORD: review_test
+          POSTGRES_DB: review_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U review_test -d review_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      APERTUREPRISM_INTEGRATION_DATABASE_URL: postgres://review_test:review_test@localhost:5432/review_test
+      APERTUREPRISM_INTEGRATION_REDIS_URL: redis://localhost:6379
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,10 +69,16 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test (DB 集成测试未配置库时跳过)
-        # 未配置 APERTUREPRISM_INTEGRATION_DATABASE_URL 时，DB 集成测试自动跳过：
-        # 本 job 不提供数据库 service，故该路径会稳定跳过，绿灯仅代表单测通过。
+      - name: Apply test database migrations
+        run: node scripts/migrate.mjs
+        env:
+          DATABASE_URL: ${{ env.APERTUREPRISM_INTEGRATION_DATABASE_URL }}
+
+      - name: Unit and database integration tests
         run: npm run test
+
+      - name: Verify compiled dynamic modules
+        run: node scripts/check-runtime-modules.mjs
 
       - name: Web UI typecheck + tests
         # apps/web 是独立 workspace（有独立 package-lock.json，不在根 workspaces 内），

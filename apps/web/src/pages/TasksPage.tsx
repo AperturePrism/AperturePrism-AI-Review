@@ -1,3 +1,10 @@
+import { ListIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+import { TaskDetailPage } from "./TaskDetailPage";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/tasks", label: "审查队列", group: "analysis", order: 22, icon: PageIcon, render: ({ route }) => route.startsWith("/tasks/") && route.length > 7 ? <TaskDetailPage id={route.slice(7)} /> : <TasksPage /> }];
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   bumpCache,

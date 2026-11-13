@@ -1,3 +1,9 @@
+import { UserIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/users", label: "用户管理", group: "system", order: 52, icon: PageIcon, render: () => <UsersPage /> }];
+
 import { useCallback, useEffect, useState } from "react";
 import { bumpCache, fetchMe, fetchUsers, setUserRoles, type UserRow } from "../lib/api";
 import { RefreshIcon, ShieldIcon } from "../components/icons";

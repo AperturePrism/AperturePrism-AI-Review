@@ -1,0 +1,15 @@
+{
+  "name": "@apertureprism/review-workbench",
+  "private": true,
+  "version": "1.2.17",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./http": "./src/http.ts",
+    "./types": "./src/types.ts"
+  }
+}

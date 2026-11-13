@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createSessionSigner } from "./session.js";
 
 const signer = createSessionSigner({
@@ -46,4 +46,17 @@ describe("session signer", () => {
     expect(signer.parse("no-dot")).toBeNull();
     expect(signer.parse("")).toBeNull();
   });
+});
+
+it("issues distinct persistent sessions for two logins in the same millisecond", () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+  try {
+    const first = signer.sign("octocat");
+    const second = signer.sign("octocat");
+    expect(first).not.toBe(second);
+    expect(signer.parse(first)).toBe("octocat");
+    expect(signer.parse(second)).toBe("octocat");
+  } finally {
+    clock.mockRestore();
+  }
 });

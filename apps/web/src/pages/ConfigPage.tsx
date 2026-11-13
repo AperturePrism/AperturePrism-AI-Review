@@ -1,3 +1,9 @@
+import { GearIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/config", label: "系统配置", group: "system", order: 50, icon: PageIcon, render: () => <ConfigPage /> }];
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   bumpCache,

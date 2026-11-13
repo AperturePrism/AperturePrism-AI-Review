@@ -24,6 +24,8 @@ FROM node:22-alpine AS base
 WORKDIR /app
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
+# 工作台的跨进程文件锁由内核持有，容器退出时自动释放。
+RUN apk add --no-cache util-linux
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./package.json
 
@@ -72,13 +74,15 @@ CMD ["node", "scripts/migrate.mjs"]
 
 # --- web: Vite SPA built independently (apps/web is not a root workspace) ---
 FROM node:22-alpine AS web-build
-WORKDIR /web
+WORKDIR /app/apps/web
 COPY apps/web/package.json apps/web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
+# 保留工作区相对路径，网页只引用共享数据契约，生产包不引入 Node 主体。
+COPY packages /app/packages
 COPY apps/web ./
 RUN npm run build
 
 FROM nginx:1.27-alpine AS web
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=web-build /web/dist /usr/share/nginx/html
+COPY --from=web-build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 80

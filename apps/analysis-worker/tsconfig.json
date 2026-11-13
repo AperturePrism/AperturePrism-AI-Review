@@ -12,5 +12,16 @@
     "skipLibCheck": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "../../packages/pr-review/src/**/*.ts",
+    "../../packages/review-workbench/src/**/*.ts",
+    "../../packages/review-automation/src/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
 }

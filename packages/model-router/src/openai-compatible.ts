@@ -1,3 +1,8 @@
+/**
+ * OpenAI 协议：只翻译请求与供应商响应，重试与回退仍由模型路由拥有。
+ * @example
+ * createOpenAICompatibleAdapter({ provider: "gateway", baseUrl, resolveApiKey, stream: true });
+ */
 import {
   ModelInvocationError,
   type ModelCandidate,
@@ -8,6 +13,8 @@ import {
   type ModelProviderAdapter,
   type ModelToolSpec,
 } from "../../../packages/domain/src/index.js";
+import { readOpenAIStream, type StreamReadOptions } from "./stream.js";
+import { redactDiagnosticText } from "../../observability/src/redaction.js";
 
 export type OpenAICompatibleOptions = {
   provider: string;
@@ -15,6 +22,12 @@ export type OpenAICompatibleOptions = {
   /** Resolves the decrypted API key for an account, kept out of this module. */
   resolveApiKey: (accountName: string) => Promise<string>;
   fetchImpl?: typeof fetch;
+  /** 有些网关只可靠支持普通 JSON；流式协议因此显式开启。 */
+  stream?: boolean;
+  streamOptions?: Omit<StreamReadOptions, "signal">;
+  maxResponseBytes?: number;
+  /** 仅在受控排障环境使用；默认只保留状态码，避免网关回显提示词。 */
+  includeErrorDetail?: boolean;
 };
 
 /**
@@ -43,7 +56,11 @@ function toWireMessage(message: ModelMessage): Record<string, unknown> {
     role: message.role,
     content: toWireContent(message),
   };
-  if (message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
+  if (
+    message.role === "assistant" &&
+    message.toolCalls &&
+    message.toolCalls.length > 0
+  ) {
     base.tool_calls = message.toolCalls.map((call) => ({
       id: call.id,
       type: "function",
@@ -72,7 +89,9 @@ function toWireTools(
       function: {
         name: tool.name,
         description: tool.description,
-        ...(tool.parameters === undefined ? {} : { parameters: tool.parameters }),
+        ...(tool.parameters === undefined
+          ? {}
+          : { parameters: tool.parameters }),
       },
     })),
     tool_choice: toolChoice ?? "auto",
@@ -140,15 +159,91 @@ function categorizeBadRequest(body: string): ModelErrorCategory {
 }
 
 function integerOrZero(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value)
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? Math.trunc(value)
     : 0;
+}
+
+/** 普通 JSON 与错误页也限制大小，不能先读进内存再检查。 */
+async function readBoundedBody(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<string> {
+  const length = Number(response.headers.get("content-length"));
+  if (Number.isFinite(length) && length > maxBytes) {
+    void response.body?.cancel().catch(() => undefined);
+    throw new ModelInvocationError(
+      "invalid_output",
+      "provider response exceeded its byte limit",
+    );
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const text: string[] = [];
+  let bytes = 0;
+  const onAbort = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    while (true) {
+      if (signal.aborted)
+        throw new ModelInvocationError(
+          "canceled",
+          "provider response read was canceled",
+        );
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch {
+        throw new ModelInvocationError(
+          "connection_failed",
+          "provider response connection ended unexpectedly",
+        );
+      }
+      if (signal.aborted)
+        throw new ModelInvocationError(
+          "canceled",
+          "provider response read was canceled",
+        );
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maxBytes)
+        throw new ModelInvocationError(
+          "invalid_output",
+          "provider response exceeded its byte limit",
+        );
+      text.push(decoder.decode(chunk.value, { stream: true }));
+    }
+    text.push(decoder.decode());
+    return text.join("");
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
 
 export function createOpenAICompatibleAdapter(
   options: OpenAICompatibleOptions,
 ): ModelProviderAdapter {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const parsedUrl = new URL(options.baseUrl);
+  if (
+    !["http:", "https:"].includes(parsedUrl.protocol) ||
+    parsedUrl.username ||
+    parsedUrl.password ||
+    parsedUrl.search ||
+    parsedUrl.hash
+  )
+    throw new RangeError(
+      "provider baseUrl must be an HTTP URL without credentials, query, or fragment",
+    );
+  const maxResponseBytes = options.maxResponseBytes ?? 8_388_608;
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1)
+    throw new RangeError("maxResponseBytes must be a positive integer");
   const endpoint = `${options.baseUrl.replace(/\/$/, "")}/chat/completions`;
 
   return {
@@ -158,7 +253,14 @@ export function createOpenAICompatibleAdapter(
       request: ModelInvocationRequest,
       signal: AbortSignal,
     ): Promise<ModelInvocationResponse> => {
+      if (signal.aborted)
+        throw new ModelInvocationError("canceled", "invocation was canceled");
       const apiKey = await options.resolveApiKey(candidate.accountName);
+      if (signal.aborted)
+        throw new ModelInvocationError(
+          "canceled",
+          "invocation was canceled while resolving credentials",
+        );
 
       let response: Response;
       try {
@@ -170,6 +272,9 @@ export function createOpenAICompatibleAdapter(
           },
           body: JSON.stringify({
             model: candidate.model,
+            ...(options.stream
+              ? { stream: true, stream_options: { include_usage: true } }
+              : {}),
             messages: request.messages.map(toWireMessage),
             ...(request.tools === undefined || request.tools.length === 0
               ? {}
@@ -178,7 +283,8 @@ export function createOpenAICompatibleAdapter(
               ? {}
               : { max_tokens: request.maxOutputTokens }),
             ...(request.temperature === undefined
-              ? {} : { temperature: request.temperature }),
+              ? {}
+              : { temperature: request.temperature }),
             // response_format is deliberately NOT sent. The newapi gateway
             // times out / 401s / 429s on any request carrying
             // `response_format: json_object` while the same prompt without it
@@ -194,12 +300,23 @@ export function createOpenAICompatibleAdapter(
           throw new ModelInvocationError("canceled", "invocation was canceled");
         throw new ModelInvocationError(
           "connection_failed",
-          error instanceof Error ? error.message : "transport failure",
+          error instanceof Error
+            ? redactDiagnosticText(error.message)
+            : "transport failure",
         );
       }
 
       if (!response.ok) {
-        const body = await response.text().catch(() => "");
+        const body = await readBoundedBody(
+          response,
+          Math.min(maxResponseBytes, 65_536),
+          signal,
+        ).catch(() => "");
+        if (signal.aborted)
+          throw new ModelInvocationError(
+            "canceled",
+            "invocation was canceled while reading provider error",
+          );
         const category =
           response.status === 400
             ? categorizeBadRequest(body)
@@ -208,8 +325,8 @@ export function createOpenAICompatibleAdapter(
         // 把网关真实返回（截断、压缩空白）带进错误消息，便于排查 5xx 是网关侧
         // 还是模型侧问题（deep 分析工具循环曾因字段名错误被网关 5xx 拒收）。
         const detail =
-          body.trim().length > 0
-            ? ` — ${body.slice(0, 220).replace(/\s+/g, " ").trim()}`
+          options.includeErrorDetail && body.trim().length > 0
+            ? ` — ${redactDiagnosticText(body.replace(/\s+/g, " ").trim(), 220)}`
             : "";
         throw new ModelInvocationError(
           category,
@@ -218,24 +335,63 @@ export function createOpenAICompatibleAdapter(
         );
       }
 
+      if (
+        options.stream ||
+        response.headers
+          .get("content-type")
+          ?.toLowerCase()
+          .includes("text/event-stream")
+      ) {
+        return readOpenAIStream(response, {
+          ...options.streamOptions,
+          maxBytes: maxResponseBytes,
+          signal,
+        });
+      }
+
       let parsed: ChatCompletionResponse;
       try {
-        parsed = (await response.json()) as ChatCompletionResponse;
-      } catch {
+        parsed = JSON.parse(
+          await readBoundedBody(response, maxResponseBytes, signal),
+        ) as ChatCompletionResponse;
+      } catch (error) {
+        if (signal.aborted)
+          throw new ModelInvocationError(
+            "canceled",
+            "invocation was canceled while reading response",
+          );
+        if (error instanceof ModelInvocationError) throw error;
         throw new ModelInvocationError(
           "invalid_output",
           "provider response was not valid JSON",
         );
       }
 
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        !Array.isArray(parsed.choices)
+      )
+        throw new ModelInvocationError(
+          "invalid_output",
+          "provider response did not contain a choices array",
+        );
+
       const message = parsed.choices?.[0]?.message;
 
       const toolCalls = Array.isArray(message?.tool_calls)
         ? message.tool_calls
+            .filter((call) => call !== null && typeof call === "object")
             .map((call) => ({
               id: typeof call.id === "string" ? call.id : "",
-              name: typeof call.function?.name === "string" ? call.function.name : "",
-              arguments: typeof call.function?.arguments === "string" ? call.function.arguments : "{}",
+              name:
+                typeof call.function?.name === "string"
+                  ? call.function.name
+                  : "",
+              arguments:
+                typeof call.function?.arguments === "string"
+                  ? call.function.arguments
+                  : "{}",
             }))
             .filter((call) => call.name !== "")
         : undefined;

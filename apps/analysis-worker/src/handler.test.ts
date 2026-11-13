@@ -127,6 +127,102 @@ function makeServices(overrides: Partial<IssueAnalysisServices> = {}): {
 
 const neverAbort = new AbortController().signal;
 
+describe("Issue publication cancellation and lease fencing", () => {
+  it("does not publish a final result or failure comment after usage recording is canceled", async () => {
+    const controller = new AbortController();
+    const { services, calls } = makeServices({
+      recordUsage: async () => controller.abort(),
+    });
+    await expect(
+      createIssueAnalysisHandler(services)(leasedTask(), controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls()).toContain("publishPlaceholder");
+    expect(calls()).not.toContain("recallRelated");
+    expect(calls()).not.toContain("publishFinal");
+    expect(calls()).not.toContain("publishFailure");
+  });
+
+  it("does not turn canceled related-issue recall into a successful fallback", async () => {
+    const controller = new AbortController();
+    const { services, calls } = makeServices({
+      recallRelated: async () => {
+        controller.abort();
+        throw new Error("canceled index request");
+      },
+    });
+    await expect(
+      createIssueAnalysisHandler(services)(leasedTask(), controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls()).not.toContain("publishFinal");
+    expect(calls()).not.toContain("publishFailure");
+  });
+
+  it("does not turn canceled spam detection into ordinary analysis", async () => {
+    const controller = new AbortController();
+    const { services, calls } = makeServices({
+      detectSpam: async () => {
+        controller.abort();
+        throw new Error("canceled detector");
+      },
+    });
+    await expect(
+      createIssueAnalysisHandler(services)(leasedTask(), controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls()).not.toContain("publishPlaceholder");
+    expect(calls()).not.toContain("analyze");
+    expect(calls()).not.toContain("publishFailure");
+  });
+
+  it("does not write a failure comment when the final publication fence is refused", async () => {
+    const { services, calls } = makeServices();
+    await expect(
+      createIssueAnalysisHandler(services)(leasedTask(), neverAbort, {
+        beginPublishing: async () => false,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls()).not.toContain("publishFinal");
+    expect(calls()).not.toContain("publishFailure");
+  });
+
+  it("does not close spam when the task no longer owns the publication lease", async () => {
+    let closed = false;
+    const { services, calls } = makeServices({
+      detectSpam: async () => ({
+        isSpam: true,
+        reason: "advertisement",
+        confidence: 1,
+      }),
+      handleSpam: async () => {
+        closed = true;
+      },
+    });
+    await expect(
+      createIssueAnalysisHandler(services)(leasedTask(), neverAbort, {
+        beginPublishing: async () => false,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(closed).toBe(false);
+    expect(calls()).not.toContain("analyze");
+  });
+
+  it("obtains current ownership before changing an invalid-output placeholder", async () => {
+    const { services, calls } = makeServices({
+      analyze: async () => ({
+        outcome: "invalid",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        attempts: [],
+        durationMs: 1,
+      }),
+    });
+    await expect(
+      createIssueAnalysisHandler(services)(leasedTask(), neverAbort, {
+        beginPublishing: async () => false,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls()).not.toContain("publishFailure");
+  });
+});
+
 describe("issue analysis handler", () => {
   it("runs the full vertical flow and completes", async () => {
     const { services, calls } = makeServices();

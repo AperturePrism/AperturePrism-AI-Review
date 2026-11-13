@@ -1,3 +1,9 @@
+import { ShieldIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/repo-rules", label: "审核规则", group: "data", order: 43, icon: PageIcon, render: () => <RepoRulesPage /> }];
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   bumpCache,

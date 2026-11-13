@@ -1,10 +1,10 @@
 import { MAX_GLOBAL_REVIEW_RULES_CHARS } from "../../../packages/config/src/index.js";
 import {
-  ensureRepoRulesDir,
-  EXAMPLE_RULES_FILE,
-  fetchRepoRules,
-  type GitHubClient,
-  type RepoRulesOptions,
+ensureRepoRulesDir,
+EXAMPLE_RULES_FILE,
+fetchRepoRules,
+type GitHubClient,
+type RepoRulesOptions,
 } from "../../../packages/github-adapter/src/index.js";
 import type { IssueContext } from "../../../packages/issue-analysis/src/index.js";
 import type { createLogger } from "../../../packages/observability/src/index.js";

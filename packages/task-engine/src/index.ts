@@ -1,3 +1,13 @@
+/**
+ * 持久任务：创建、领取、心跳和状态转换都在这一处修改任务表。
+ *
+ * @example
+ * const task = await createAnalysisTask(db, request);
+ * const lease = await claimTask(db, { workerId: "review-1", leaseDurationMs: 60000 });
+ *
+ * 默认行为兼容旧版本；TASK_QUEUE_POLICY_JSON 与 TASK_RETRY_POLICY_JSON 可启用
+ * 公平领取和自适应重试。具体字段与调用示例见 runtime-policy.ts。
+ */
 import { eq, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as databaseSchema from "../../../packages/database/src/schema.js";
@@ -31,6 +41,19 @@ import {
   type TaskCreationResult,
   type TaskType,
 } from "../../../packages/domain/src/index.js";
+import { parseQueuePolicy, type QueuePolicy } from "./queue.js";
+import { planRetry, type RetryPolicy } from "./retry.js";
+import { loadTaskRuntimePolicy } from "./runtime-policy.js";
+
+export * from "./retry.js";
+export * from "./queue.js";
+export * from "./batch.js";
+export * from "./plan.js";
+export * from "./quota.js";
+export * from "./dead-letter.js";
+export * from "./runtime-policy.js";
+export * from "./timeline.js";
+export * from "./operations.js";
 
 type Database = PostgresJsDatabase<typeof databaseSchema>;
 type TaskDatabase = Pick<Database, "insert" | "select">;
@@ -60,6 +83,7 @@ type PersistedTask = {
 };
 
 type LeasedTaskRow = PersistedTask & {
+  attemptId?: string;
   leaseOwner: string;
   leaseExpiresAt: Date;
   heartbeatAt: Date;
@@ -83,6 +107,7 @@ function toLeasedTask(task: LeasedTaskRow): LeasedTask {
     leaseExpiresAt: task.leaseExpiresAt,
     heartbeatAt: task.heartbeatAt,
     attemptNumber: task.attemptNumber,
+    ...(task.attemptId ? { attemptId: task.attemptId } : {}),
     payload: task.payload,
   };
 }
@@ -168,18 +193,52 @@ export async function createAnalysisTask(
 
 export async function claimTask(
   db: Database,
-  input: ClaimTaskInput,
+  input: ClaimTaskInput & { policy?: Partial<QueuePolicy> },
 ): Promise<LeasedTask | null> {
   const now = input.now ?? new Date();
   const expiresAt = leaseExpiry(now, input.leaseDurationMs);
+  const configured = input.policy ?? loadTaskRuntimePolicy().queue;
+  const policy = configured ? parseQueuePolicy(configured) : undefined;
+  if (!input.workerId.trim()) throw new TypeError("workerId must not be empty");
+  if (
+    !Number.isSafeInteger(input.leaseDurationMs) ||
+    input.leaseDurationMs <= 0
+  )
+    throw new RangeError("leaseDurationMs must be a positive safe integer");
+  if (!Number.isFinite(expiresAt.getTime()))
+    throw new RangeError("lease expiry must be a valid date");
 
   return db.transaction(async (tx) => {
+    // 启用限额的 worker 共用一把事务锁，检查当前占用和领取新任务不可被穿插。
+    // 混用旧领取器不提供全局限额保证；集群应统一配置此环境变量。
+    if (policy) await tx.execute(sql`select pg_advisory_xact_lock(721942631)`);
+    const active = sql`status in ('leased', 'running', 'publishing') and lease_expires_at > ${now.toISOString()}::timestamptz`;
+    const typeFilter = policy
+      ? sql`and task_type in (${sql.join(
+          policy.allowedTaskTypes.map((type) => sql`${type}`),
+          sql`, `,
+        )})`
+      : sql``;
+    const totalLimit = policy?.maxActiveTotal
+      ? sql`and (select count(*) from analysis_tasks where ${active}) < ${policy.maxActiveTotal}`
+      : sql``;
+    const repositoryLimit = policy?.maxActivePerRepository
+      ? sql`and (select count(*) from analysis_tasks occupied where occupied.repository_id is not distinct from candidate.repository_id and occupied.status in ('leased', 'running', 'publishing') and occupied.lease_expires_at > ${now.toISOString()}::timestamptz) < ${policy.maxActivePerRepository}`
+      : sql``;
+    const priority = policy?.agingIntervalMs
+      ? sql`priority + least(${policy.maxAgingBoost}, greatest(0, floor(extract(epoch from (${now.toISOString()}::timestamptz - created_at)) * 1000 / ${policy.agingIntervalMs})))`
+      : sql`priority`;
+    const fairness = policy?.roundRobin
+      ? sql`(select count(*) from analysis_tasks occupied where occupied.repository_id is not distinct from candidate.repository_id and occupied.status in ('leased', 'running', 'publishing') and occupied.lease_expires_at > ${now.toISOString()}::timestamptz) asc, `
+      : sql``;
     const candidates = await tx.execute<{ id: string }>(sql`
       select id
-      from analysis_tasks
+      from analysis_tasks candidate
       where status = 'queued'
         and next_attempt_at <= ${now.toISOString()}::timestamptz
-      order by priority desc, next_attempt_at asc, created_at asc
+        and attempt_count < max_attempts
+        ${typeFilter} ${totalLimit} ${repositoryLimit}
+      order by ${fairness}${priority} desc, next_attempt_at asc, created_at asc, id asc
       for update skip locked
       limit 1
     `);
@@ -212,12 +271,17 @@ export async function claimTask(
     if (!task || !task.leaseOwner || !task.leaseExpiresAt || !task.heartbeatAt)
       throw new Error("claimed task is missing lease fields");
 
-    await tx.insert(taskAttempts).values({
-      taskId: task.id,
-      attemptNumber: task.attemptNumber,
-      workerId: input.workerId,
-      startedAt: now,
-    });
+    const [attempt] = await tx
+      .insert(taskAttempts)
+      .values({
+        taskId: task.id,
+        attemptNumber: task.attemptNumber,
+        workerId: input.workerId,
+        startedAt: now,
+      })
+      .returning({ id: taskAttempts.id });
+    if (!attempt)
+      throw new Error("claimed task is missing its durable attempt identity");
     await tx.insert(taskEvents).values({
       taskId: task.id,
       eventType: taskLeasedEventType,
@@ -231,6 +295,7 @@ export async function claimTask(
 
     return toLeasedTask({
       ...task,
+      attemptId: attempt.id,
       leaseOwner: task.leaseOwner,
       leaseExpiresAt: task.leaseExpiresAt,
       heartbeatAt: task.heartbeatAt,
@@ -446,14 +511,21 @@ export async function completeTask(
 
 export async function failTask(
   db: Database,
-  input: FailTaskInput,
+  input: FailTaskInput & {
+    retryPolicy?: Partial<RetryPolicy>;
+    retryAfterMs?: number;
+  },
 ): Promise<FailureResult | null> {
   const now = input.now ?? new Date();
+  const retryPolicy = input.retryPolicy ?? loadTaskRuntimePolicy().retry;
+  if (!Number.isSafeInteger(input.retryDelayMs) || input.retryDelayMs < 0)
+    throw new RangeError("retryDelayMs must be a nonnegative safe integer");
   return db.transaction(async (tx) => {
     const owned = await tx
       .select({
         attemptCount: analysisTasks.attemptCount,
         maxAttempts: analysisTasks.maxAttempts,
+        createdAt: analysisTasks.createdAt,
       })
       .from(analysisTasks)
       .where(
@@ -466,10 +538,31 @@ export async function failTask(
     const task = owned[0];
     if (!task) return null;
 
-    const exhausted = task.attemptCount >= task.maxAttempts;
+    const decision = retryPolicy
+      ? planRetry({
+          attempt: task.attemptCount,
+          maxAttempts: task.maxAttempts,
+          category: input.errorCategory,
+          now,
+          key: input.taskId,
+          startedAt: task.createdAt,
+          policy: retryPolicy,
+          ...(input.retryAfterMs !== undefined
+            ? { retryAfterMs: input.retryAfterMs }
+            : {}),
+        })
+      : undefined;
+    // 旧提交的 diff 已不再对应当前 head，重复分析无法让它重新有效。
+    const exhausted =
+      input.errorCategory === "stale_revision" ||
+      (decision
+        ? decision.action === "stop"
+        : task.attemptCount >= task.maxAttempts);
     const nextAttemptAt = exhausted
       ? null
-      : new Date(now.getTime() + input.retryDelayMs);
+      : decision?.action === "retry"
+        ? decision.nextAttemptAt
+        : new Date(now.getTime() + input.retryDelayMs);
     const updated = await tx
       .update(analysisTasks)
       .set({
@@ -505,6 +598,7 @@ export async function failTask(
         workerId: input.workerId,
         errorCategory: input.errorCategory,
         attemptNumber: task.attemptCount,
+        ...(decision ? { retryReason: decision.reason } : {}),
         // 二次截断：事件是排查失败的唯一持久记录，不能因调用方疏忽而写入长文本。
         ...(input.errorMessage
           ? { errorMessage: input.errorMessage.slice(0, 500) }
@@ -519,6 +613,14 @@ export async function failTask(
       nextAttemptAt,
     };
   });
+}
+
+/** 显式策略入口，供不通过环境变量配置的队列管理器调用。 */
+export async function claimTaskWithPolicy(
+  db: Database,
+  input: ClaimTaskInput & { policy: Partial<QueuePolicy> },
+): Promise<LeasedTask | null> {
+  return claimTask(db, input);
 }
 
 export async function cancelTask(
@@ -693,20 +795,39 @@ export async function resetTaskToQueued(
 export async function recordAttemptUsage(
   db: Database,
   input: RecordAttemptUsageInput,
-): Promise<void> {
-  await db.insert(taskEvents).values({
-    taskId: input.taskId,
-    eventType: taskAnalysisUsageEventType,
-    data: {
+): Promise<boolean> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    // 旧执行器的模型可能比租约活得更久。只有当前尝试仍持有任务，才允许它写
+    // 用量；否则陈旧 usage 会污染重跑后的成本统计与批次诊断。
+    const [owned] = await tx
+      .select({ id: analysisTasks.id })
+      .from(analysisTasks)
+      .where(
+        sql`${analysisTasks.id} = ${input.taskId}
+        and ${analysisTasks.leaseOwner} = ${input.workerId}
+        and ${analysisTasks.attemptCount} = ${input.attemptNumber}
+        and ${analysisTasks.status} in ('leased', 'running', 'publishing')
+        and ${analysisTasks.leaseExpiresAt} > ${now.toISOString()}::timestamptz`,
+      )
+      .for("update")
+      .limit(1);
+    if (!owned) return false;
+    await tx.insert(taskEvents).values({
       taskId: input.taskId,
-      workerId: input.workerId,
-      attemptNumber: input.attemptNumber,
-      inputTokens: input.inputTokens,
-      outputTokens: input.outputTokens,
-      durationMs: input.durationMs,
-      provider: input.provider,
-      model: input.model,
-    },
+      eventType: taskAnalysisUsageEventType,
+      data: {
+        taskId: input.taskId,
+        workerId: input.workerId,
+        attemptNumber: input.attemptNumber,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+        durationMs: input.durationMs,
+        provider: input.provider,
+        model: input.model,
+      },
+    });
+    return true;
   });
 }
 

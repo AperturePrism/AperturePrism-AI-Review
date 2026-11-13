@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSse } from "./hooks/useSse";
 import { navigate, tabOf, useHashRoute } from "./hooks/useHash";
 import { useTheme } from "./hooks/useTheme";
@@ -7,115 +7,17 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { eventsUrl, getToken, onUnauthorized, setToken } from "./lib/auth";
 import { fetchSetupStatus } from "./lib/api";
 import { Login } from "./pages/Login";
-import { Overview } from "./pages/Overview";
-import { LogOverviewPage } from "./pages/LogOverviewPage";
-import { ProviderPage } from "./pages/ProviderPage";
-import { ResultsPage } from "./pages/ResultsPage";
-import { TaskDetailPage } from "./pages/TaskDetailPage";
-import { TasksPage } from "./pages/TasksPage";
-import { ReposPage } from "./pages/ReposPage";
-import { VectorPage } from "./pages/VectorPage";
-import { ScanPage } from "./pages/ScanPage";
-import { LabelsPage } from "./pages/LabelsPage";
-import { ConfigPage } from "./pages/ConfigPage";
-import { AccountPage } from "./pages/AccountPage";
-import { UsersPage } from "./pages/UsersPage";
-import { SecurityPage } from "./pages/SecurityPage";
-import { MemoryPage } from "./pages/MemoryPage";
-import { AgentPage } from "./pages/AgentPage";
-import { AboutPage } from "./pages/AboutPage";
-import { OpsPage } from "./pages/OpsPage";
 import { SetupPage } from "./pages/SetupPage";
-import { BotPage } from "./pages/BotPage";
-import { GitHubAccessPage } from "./pages/GitHubAccessPage";
-import { AnalysisSettingsPage } from "./pages/AnalysisSettingsPage";
-import { RepoRulesPage } from "./pages/RepoRulesPage";
-import { GrantsPage } from "./pages/GrantsPage";
-import {
-  ActivityIcon,
-  BotIcon,
-  BugIcon,
-  CpuIcon,
-  DatabaseIcon,
-  FolderIcon,
-  GaugeIcon,
-  GearIcon,
-  GitHubIcon,
-  GridIcon,
-  InfoIcon,
-  LayersIcon,
-  ListIcon,
-  LogoutIcon,
-  MenuIcon,
-  MoonIcon,
-  PullRequestIcon,
-  RadarIcon,
-  ShieldIcon,
-  SlidersIcon,
-  SparkleIcon,
-  SunIcon,
-  TagIcon,
-  UserCircleIcon,
-  UserIcon,
-} from "./components/icons";
+import { NAV, renderConsolePage, routeGroupTitle } from "./lib/navigation";
+export { NAV, routeGroupTitle } from "./lib/navigation";
+export type { NavGroup } from "./lib/navigation";
+import { LogoutIcon, MenuIcon, MoonIcon, SunIcon, UserCircleIcon } from "./components/icons";
 
 const STATUS_TEXT: Record<string, string> = {
   connecting: "连接中",
   online: "实时连接",
   offline: "已断开",
 };
-
-type NavItem = { path: string; label: string; icon: (p: { size?: number }) => ReactElement };
-export type NavGroup = { title?: string; items: NavItem[] };
-
-export const NAV: NavGroup[] = [
-  {
-    items: [
-      { path: "/", label: "仪表盘", icon: GridIcon },
-      { path: "/logs", label: "日志总览", icon: ActivityIcon },
-    ],
-  },
-  {
-    title: "分析",
-    items: [
-      { path: "/issues", label: "Issue 分析", icon: BugIcon },
-      { path: "/pr", label: "PR 审查", icon: PullRequestIcon },
-      { path: "/tasks", label: "审查队列", icon: ListIcon },
-    ],
-  },
-  {
-    title: "接入与身份",
-    items: [
-      { path: "/github-access", label: "GitHub 接入", icon: GitHubIcon },
-      { path: "/bot", label: "机器人", icon: BotIcon },
-      { path: "/provider", label: "模型路由", icon: CpuIcon },
-    ],
-  },
-  {
-    title: "数据与运维",
-    items: [
-      { path: "/repos", label: "已安装仓库", icon: FolderIcon },
-      { path: "/grants", label: "仓库授权", icon: UserIcon },
-      { path: "/analysis", label: "分析设置", icon: SlidersIcon },
-      { path: "/repo-rules", label: "审核规则", icon: ShieldIcon },
-      { path: "/vector", label: "向量存储", icon: DatabaseIcon },
-      { path: "/scan", label: "仓库扫描", icon: RadarIcon },
-      { path: "/memory", label: "记忆管理", icon: SparkleIcon },
-      { path: "/labels", label: "标签配置", icon: TagIcon },
-      { path: "/agent", label: "Agent 能力", icon: LayersIcon },
-      { path: "/ops", label: "运维", icon: GaugeIcon },
-    ],
-  },
-  {
-    title: "系统",
-    items: [
-      { path: "/config", label: "系统配置", icon: GearIcon },
-      { path: "/security", label: "安全管理", icon: ShieldIcon },
-      { path: "/users", label: "用户管理", icon: UserIcon },
-      { path: "/about", label: "关于", icon: InfoIcon },
-    ],
-  },
-];
 
 export function App() {
   const [token, setTokenState] = useState<string>(() => getToken());
@@ -227,32 +129,7 @@ function AuthedConsole(props: { onLogout: () => void }) {
     return { eyebrow: "工作台", title: "关于" };
   }, [route, active]);
 
-  let page;
-  if (route.startsWith("/tasks/") && route.length > "/tasks/".length) {
-    page = <TaskDetailPage id={route.slice("/tasks/".length)} />;
-  } else if (active === "/" || active === "") page = <Overview sse={sse} />;
-  else if (active === "/logs") page = <LogOverviewPage />;
-  else if (active === "/tasks") page = <TasksPage />;
-  else if (active === "/issues") page = <ResultsPage type="issue" label="Issue 分析" />;
-  else if (active === "/pr") page = <ResultsPage type="pr" label="PR 审查" />;
-  else if (active === "/repos") page = <ReposPage />;
-  else if (active === "/vector") page = <VectorPage />;
-  else if (active === "/scan") page = <ScanPage />;
-  else if (active === "/memory") page = <MemoryPage />;
-  else if (active === "/labels") page = <LabelsPage />;
-  else if (active === "/agent") page = <AgentPage />;
-  else if (active === "/ops") page = <OpsPage />;
-  else if (active === "/bot") page = <BotPage />;
-  else if (active === "/github-access") page = <GitHubAccessPage />;
-  else if (active === "/analysis") page = <AnalysisSettingsPage />;
-  else if (active === "/repo-rules") page = <RepoRulesPage />;
-  else if (active === "/grants") page = <GrantsPage />;
-  else if (active === "/provider") page = <ProviderPage />;
-  else if (active === "/config") page = <ConfigPage />;
-  else if (active === "/security") page = <SecurityPage />;
-  else if (active === "/account") page = <AccountPage />;
-  else if (active === "/users") page = <UsersPage />;
-  else page = <AboutPage />;
+  let page = renderConsolePage(active || "/", { route, sse });
 
   // ErrorBoundary 按路由 key 重置：切页自动清除上一次的错误态，页面组件抛错
   // 时只替换内容区，侧栏 / 登录态保持可用。
@@ -358,11 +235,4 @@ function AuthedConsole(props: { onLogout: () => void }) {
       </main>
     </div>
   );
-}
-
-export function routeGroupTitle(active: string): string | undefined {
-  for (const group of NAV) {
-    if (group.items.some((it) => it.path === active)) return group.title;
-  }
-  return undefined;
 }
