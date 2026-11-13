@@ -106,3 +106,76 @@ describe("judgeDuplicates", () => {
     expect(outcome.outcome).toBe("invalid");
   });
 });
+
+describe("duplicate judgment boundaries", () => {
+  it("rejects invented issue numbers even when the JSON is otherwise valid", async () => {
+    const invented = validJudgment.replace("[7]", "[999]");
+    const { a, calls } = adapter([invented, invented]);
+    const result = await judgeDuplicates(
+      {
+        adapters: new Map([["newapi", a]]),
+        candidates: [candidate],
+        ...refOptions,
+      },
+      {
+        lead: { issueNumber: 1, title: "crash", body: "HTTP_511" },
+        candidates: [{ issueNumber: 7, title: "crash", body: "HTTP_511" }],
+      },
+    );
+    expect(calls()).toBe(2);
+    expect(result.outcome).toBe("invalid");
+    expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 6 });
+  });
+
+  it("repairs references to invented issues against the actual candidate list", async () => {
+    const { a } = adapter([
+      validJudgment.replace("[7]", "[999]"),
+      validJudgment,
+    ]);
+    const result = await judgeDuplicates(
+      {
+        adapters: new Map([["newapi", a]]),
+        candidates: [candidate],
+        ...refOptions,
+      },
+      {
+        lead: { issueNumber: 1, title: "crash", body: "HTTP_511" },
+        candidates: [{ issueNumber: 7, title: "crash", body: "HTTP_511" }],
+      },
+    );
+    expect(result.outcome).toBe("valid");
+    if (result.outcome === "valid")
+      expect(result.judgment.relatedIssues).toEqual([7]);
+  });
+
+  it("bounds the repair by the remaining deadline", async () => {
+    let now = 0;
+    let calls = 0;
+    const a: ModelProviderAdapter = {
+      provider: "newapi",
+      invoke: async () => {
+        calls += 1;
+        now = 10_001;
+        return {
+          content: "bad json",
+          usage: { inputTokens: 5, outputTokens: 3 },
+        };
+      },
+    };
+    await expect(
+      judgeDuplicates(
+        {
+          adapters: new Map([["newapi", a]]),
+          candidates: [candidate],
+          ...refOptions,
+          now: () => now,
+        },
+        {
+          lead: { issueNumber: 1, title: "c", body: "b" },
+          candidates: [{ issueNumber: 7, title: "c", body: "b" }],
+        },
+      ),
+    ).rejects.toMatchObject({ lastCategory: "timeout" });
+    expect(calls).toBe(1);
+  });
+});

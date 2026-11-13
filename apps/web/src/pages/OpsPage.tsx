@@ -1,3 +1,9 @@
+import { GaugeIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/ops", label: "运维", group: "data", order: 49, icon: PageIcon, render: () => <OpsPage /> }];
+
 import { useCallback, useEffect, useState } from "react";
 import {
   fetchAlerts,

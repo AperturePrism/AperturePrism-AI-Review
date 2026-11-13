@@ -5,6 +5,7 @@ import {
   reviewEventTone,
   type GitHubReviewClient,
   type ReviewPublicationStore,
+  type PublishReviewInput,
 } from "./publish.js";
 import type { Finding, PrReviewContract } from "./types.js";
 import { parsePrReviewJson } from "./validate.js";
@@ -240,4 +241,178 @@ describe("review rendering", () => {
     const body = renderReviewBody({ ...review, overallTone: "approve" });
     expect(body).toContain("looks fine");
   });
+});
+
+it("uses the assessed publication and keeps accepted findings out of inline comments", async () => {
+  const { assessReview } = await import("./assessment.js");
+  const { findingFingerprint } = await import("./baseline.js");
+  const { renderDiffForModel } = await import("./context.js");
+  const { parseUnifiedDiff } = await import("./diff.js");
+  const { parseSuppressions } = await import("./suppression.js");
+  const finding: Finding = {
+    rule: "unsafe-query",
+    severity: "high",
+    file: "src/db.ts",
+    afterLine: 1,
+    message: "查询未经约束",
+    evidence: "database.query(input);",
+    impact: "查询范围可被影响",
+    suggestion: "绑定参数",
+    confidence: 0.9,
+  };
+  const original: PrReviewContract = {
+    ...review,
+    overallTone: "changes_requested",
+    findings: [finding],
+  };
+  const context = renderDiffForModel(
+    parseUnifiedDiff(
+      "diff --git a/src/db.ts b/src/db.ts\n--- /dev/null\n+++ b/src/db.ts\n@@ -0,0 +1 @@\n+database.query(input);\n",
+    ),
+  );
+  const suppressions = parseSuppressions([
+    {
+      id: "accepted",
+      fingerprint: findingFingerprint(finding),
+      reason: "等待维护窗口完成修复",
+      owner: "@db",
+      expiresAt: "2027-01-01T00:00:00Z",
+    },
+  ]);
+  const assessment = assessReview(original, context, {
+    suppressions,
+    now: new Date("2026-11-13T00:00:00Z"),
+  });
+  const publishReview = vi
+    .fn<GitHubReviewClient["publishReview"]>()
+    .mockResolvedValue({ id: 99 });
+  await publishAssessment({
+    store: store(),
+    github: { publishReview },
+    taskId: "task-assessed",
+    installationId: "42",
+    owner: "owner",
+    name: "repo",
+    pullNumber: 12,
+    revision: "new-head",
+    review: original,
+    assessment,
+  });
+  expect(publishReview).toHaveBeenCalledOnce();
+  const call = publishReview.mock.calls[0]![0];
+  expect(call.comments).toEqual([]);
+  expect(call.event).toBe("COMMENT");
+  expect(call.body).toContain("已接受问题：1");
+  expect(call.body).toContain("审查范围与质量门禁");
+  expect(renderReviewBody(original, assessment)).not.toContain(finding.message);
+});
+
+function cancellablePublication(
+  overrides: Partial<PublishReviewInput> = {},
+): PublishReviewInput {
+  return {
+    store: store(),
+    github,
+    taskId: "cancel-test",
+    installationId: "42",
+    owner: "owner",
+    name: "repo",
+    pullNumber: 10,
+    revision: "cancel-head",
+    review,
+    ...overrides,
+  };
+}
+
+it("does not read publication state or contact GitHub after prior cancellation", async () => {
+  const findExternalObjectId =
+    vi.fn<ReviewPublicationStore["findExternalObjectId"]>();
+  const publishReview = vi.fn<GitHubReviewClient["publishReview"]>();
+  await expect(
+    publishAssessment(
+      cancellablePublication({
+        signal: AbortSignal.abort(),
+        github: { publishReview },
+        store: { ...store(), findExternalObjectId },
+      }),
+    ),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(findExternalObjectId).not.toHaveBeenCalled();
+  expect(publishReview).not.toHaveBeenCalled();
+});
+
+it("does not start an external publication when canceled while looking up idempotency state", async () => {
+  const controller = new AbortController();
+  const publishReview = vi.fn<GitHubReviewClient["publishReview"]>();
+  await expect(
+    publishAssessment(
+      cancellablePublication({
+        signal: controller.signal,
+        github: { publishReview },
+        store: {
+          ...store(),
+          findExternalObjectId: async () => {
+            controller.abort();
+            return null;
+          },
+        },
+      }),
+    ),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(publishReview).not.toHaveBeenCalled();
+});
+
+it("does not fall back to a second review after the first request was canceled", async () => {
+  const controller = new AbortController();
+  const publishReview = vi
+    .fn<GitHubReviewClient["publishReview"]>()
+    .mockImplementation(async () => {
+      controller.abort();
+      throw Object.assign(new Error("own pull request"), { status: 422 });
+    });
+  await expect(
+    publishAssessment(
+      cancellablePublication({
+        signal: controller.signal,
+        github: { publishReview },
+      }),
+    ),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(publishReview).toHaveBeenCalledOnce();
+});
+
+it("propagates provider AbortError even when its other fields look like a fallback condition", async () => {
+  const publishReview = vi
+    .fn<GitHubReviewClient["publishReview"]>()
+    .mockRejectedValue(
+      Object.assign(new Error("own pull request"), {
+        name: "AbortError",
+        status: 422,
+      }),
+    );
+  await expect(
+    publishAssessment(cancellablePublication({ github: { publishReview } })),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(publishReview).toHaveBeenCalledOnce();
+});
+
+it("records a successful external publication even if cancellation arrives just after its response", async () => {
+  const controller = new AbortController();
+  const insert = vi.fn<ReviewPublicationStore["insert"]>().mockResolvedValue();
+  const publishReview = vi
+    .fn<GitHubReviewClient["publishReview"]>()
+    .mockImplementation(async () => {
+      controller.abort();
+      return { id: 57 };
+    });
+  const result = await publishAssessment(
+    cancellablePublication({
+      signal: controller.signal,
+      github: { publishReview },
+      store: { ...store(), insert },
+    }),
+  );
+  expect(result).toEqual({ reviewId: 57, created: true });
+  expect(insert).toHaveBeenCalledOnce();
+  expect(insert.mock.calls[0]![0].externalObjectId).toBe("57");
 });

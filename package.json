@@ -25,7 +25,12 @@
     "migrate": "node scripts/migrate.mjs",
     "lint": "eslint .",
     "test": "npm run build --workspaces --if-present && vitest run",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "workbench": "node scripts/review-workbench.mjs",
+    "test:integration": "node scripts/test-integration.mjs",
+    "review:evaluate": "node scripts/review-evaluation.mjs",
+    "review:automate": "node scripts/review-automation.mjs",
+    "verify:runtime": "node scripts/check-runtime-modules.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

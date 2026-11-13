@@ -1,3 +1,9 @@
+import { UserCircleIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/account", label: "个人设置", group: "system", order: 54, hidden: true, icon: PageIcon, render: () => <AccountPage /> }];
+
 import { useCallback, useEffect, useState } from "react";
 import { bumpCache, fetchMe, saveMe, type AccountInfo } from "../lib/api";
 import { GearIcon, RefreshIcon } from "../components/icons";

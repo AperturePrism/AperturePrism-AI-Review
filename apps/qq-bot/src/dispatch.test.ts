@@ -51,7 +51,7 @@ describe("QQ bot dispatch", () => {
       kind: "review",
       raw: "",
     });
-    expect(review).toContain("/review https://github.com/owner/repo/issues/123");
+    expect(review).toContain("/review https://github.com/owner/repo/pull/123");
 
     const retried = await dispatchBotTurn(message("/retry"), {
       kind: "retry",

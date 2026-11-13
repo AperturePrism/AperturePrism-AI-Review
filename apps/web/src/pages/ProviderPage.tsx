@@ -1,3 +1,9 @@
+import { CpuIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/provider", label: "模型路由", group: "identity", order: 32, icon: PageIcon, render: () => <ProviderPage /> }];
+
 import { useCallback, useEffect, useId, useState } from "react";
 import {
   bumpCache,

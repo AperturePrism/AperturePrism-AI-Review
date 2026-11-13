@@ -1,3 +1,9 @@
+import { SparkleIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/memory", label: "记忆管理", group: "data", order: 46, icon: PageIcon, render: () => <MemoryPage /> }];
+
 import { useCallback, useEffect, useState } from "react";
 import {
   bumpCache,

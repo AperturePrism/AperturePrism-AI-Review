@@ -110,7 +110,12 @@ describe("PR review handler", () => {
     const handler = createPrReviewHandler(services);
     const result = await handler(leasedTask(), neverAbort);
     expect(result).toEqual({ outcome: "completed" });
-    expect(calls()).toEqual(["buildContext", "review", "recordUsage", "publishFinal"]);
+    expect(calls()).toEqual([
+      "buildContext",
+      "review",
+      "recordUsage",
+      "publishFinal",
+    ]);
   });
 
   it("fails with invalid_output and skips publish on invalid review", async () => {
@@ -124,7 +129,10 @@ describe("PR review handler", () => {
     });
     const handler = createPrReviewHandler(services);
     const result = await handler(leasedTask(), neverAbort);
-    expect(result).toEqual({ outcome: "failed", errorCategory: "invalid_output" });
+    expect(result).toEqual({
+      outcome: "failed",
+      errorCategory: "invalid_output",
+    });
     expect(calls()).not.toContain("publishFinal");
     expect(calls()).toContain("recordUsage");
   });
@@ -151,7 +159,10 @@ describe("PR review handler", () => {
     });
     const handler = createPrReviewHandler(services);
     const result = await handler(leasedTask(), neverAbort);
-    expect(result).toEqual({ outcome: "failed", errorCategory: "github_not_found" });
+    expect(result).toEqual({
+      outcome: "failed",
+      errorCategory: "github_not_found",
+    });
   });
 
   it("lets retryable errors propagate so the engine retries", async () => {
@@ -161,6 +172,112 @@ describe("PR review handler", () => {
       },
     });
     const handler = createPrReviewHandler(services);
-    await expect(handler(leasedTask(), neverAbort)).rejects.toThrow("provider down");
+    await expect(handler(leasedTask(), neverAbort)).rejects.toThrow(
+      "provider down",
+    );
+  });
+});
+it("passes assessment through the real handler publication and check-run boundary", async () => {
+  const { assessReview } =
+    await import("../../../packages/pr-review/src/assessment.js");
+  const assessment = assessReview(review, context().rendered);
+  let publishedAssessment: unknown;
+  let finishedAssessment: unknown;
+  let publishedSignal: AbortSignal | undefined;
+  const { services } = makeServices({
+    review: async () => ({
+      ...validOutcome,
+      outcome: "valid",
+      review,
+      assessment,
+    }),
+    publishFinal: async (_task, _review, signal, value) => {
+      publishedSignal = signal;
+      publishedAssessment = value;
+    },
+    finishCheckRun: async (_task, _review, value) => {
+      finishedAssessment = value;
+    },
+  });
+  const result = await createPrReviewHandler(services)(
+    leasedTask(),
+    neverAbort,
+  );
+  expect(result).toEqual({ outcome: "completed" });
+  expect(publishedSignal).toBe(neverAbort);
+  expect(publishedAssessment).toBe(assessment);
+  expect(finishedAssessment).toBe(assessment);
+});
+
+it("rejects stale PR revisions without publishing a review on the wrong commit", async () => {
+  const { PrContextRevisionError } =
+    await import("../../../packages/pr-review/src/context-build.js");
+  const { services, calls } = makeServices({
+    buildContext: async () => {
+      throw new PrContextRevisionError("old", "new");
+    },
+  });
+  expect(
+    await createPrReviewHandler(services)(leasedTask(), neverAbort),
+  ).toEqual({ outcome: "failed", errorCategory: "stale_revision" });
+  expect(calls()).not.toContain("review");
+  expect(calls()).not.toContain("publishFinal");
+});
+
+describe("PR publication cancellation and lease fencing", () => {
+  it("does not begin an already canceled review", async () => {
+    const { services, calls } = makeServices();
+    await expect(
+      createPrReviewHandler(services)(leasedTask(), AbortSignal.abort()),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls()).toEqual([]);
+  });
+
+  it("does not publish when cancellation happens while recording usage", async () => {
+    const controller = new AbortController();
+    const { services, calls } = makeServices({
+      recordUsage: async () => controller.abort(),
+    });
+    await expect(
+      createPrReviewHandler(services)(leasedTask(), controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls()).not.toContain("publishFinal");
+  });
+
+  it("requires the publication lease before any final GitHub write", async () => {
+    const { services, calls } = makeServices();
+    await expect(
+      createPrReviewHandler(services)(leasedTask(), neverAbort, {
+        beginPublishing: async () => false,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls()).toContain("recordUsage");
+    expect(calls()).not.toContain("publishFinal");
+  });
+
+  it("obtains publication ownership before publishing and stops later effects on cancellation", async () => {
+    const controller = new AbortController();
+    const events: string[] = [];
+    const { services } = makeServices({
+      publishFinal: async () => {
+        events.push("publish");
+        controller.abort();
+      },
+      finishCheckRun: async () => {
+        events.push("check");
+      },
+      recordMemory: async () => {
+        events.push("memory");
+      },
+    });
+    await expect(
+      createPrReviewHandler(services)(leasedTask(), controller.signal, {
+        beginPublishing: async () => {
+          events.push("lease");
+          return true;
+        },
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(events).toEqual(["lease", "publish"]);
   });
 });

@@ -6,7 +6,7 @@ import type {
   IssueAnalysisOutcome,
   IssueContext,
 } from "../../../packages/issue-analysis/src/index.js";
-import type { TaskHandler } from "./loop.js";
+import type { TaskExecution, TaskHandler } from "./loop.js";
 
 export type SpamVerdict = {
   isSpam: boolean;
@@ -104,19 +104,22 @@ export type IssueAnalysisServices = {
 export function createIssueAnalysisHandler(
   services: IssueAnalysisServices,
 ): TaskHandler {
-  return async (task, signal) => {
+  return async (task, signal, execution) => {
     try {
       if (task.taskType !== "issue_analysis")
         return { outcome: "failed", errorCategory: "unsupported_task_type" };
 
+      signal.throwIfAborted();
       const context = await services.buildContext(task, signal);
+      signal.throwIfAborted();
 
       // 值不值得重新分析先判：它只查一次数据库，比广告识别（一次模型调用）
       // 便宜得多。放在广告识别之前不会漏掉夹带广告的编辑 —— 塞进一段广告文本
       // 本身就是「实质改动」，不会低于变化幅度阈值。
       if (services.shouldReanalyze) {
-        if (!(await services.shouldReanalyze(task, context)))
-          return { outcome: "completed" };
+        const reanalyze = await services.shouldReanalyze(task, context);
+        signal.throwIfAborted();
+        if (!reanalyze) return { outcome: "completed" };
       }
 
       // Ad/spam detection runs before any normal analysis. A confirmed spam
@@ -125,27 +128,50 @@ export function createIssueAnalysisHandler(
       if (services.detectSpam) {
         try {
           const verdict = await services.detectSpam(task, signal);
+          signal.throwIfAborted();
           if (verdict && verdict.isSpam) {
+            if (execution && !(await execution.beginPublishing()))
+              throw new DOMException(
+                "Task lease was lost before spam handling",
+                "AbortError",
+              );
+            signal.throwIfAborted();
             try {
               await services.handleSpam?.(task, verdict, signal);
-            } catch {
+            } catch (error) {
+              signal.throwIfAborted();
+              if (error instanceof Error && error.name === "AbortError")
+                throw error;
               // Spam handling is best-effort; never fails the completed task.
             }
             return { outcome: "completed" };
           }
-        } catch {
+        } catch (error) {
+          signal.throwIfAborted();
+          if (error instanceof Error && error.name === "AbortError")
+            throw error;
           // Detection failure degrades to the normal analysis flow.
         }
       }
 
+      signal.throwIfAborted();
       await services.publishPlaceholder(task, signal);
+      signal.throwIfAborted();
 
       const outcome = await services.analyze(context, signal);
+      signal.throwIfAborted();
       await services.recordUsage(task, outcome);
+      signal.throwIfAborted();
 
       if (outcome.outcome === "invalid") {
         // 占位评论已经发出：不改写的话它会永远停在「正在分析」。
-        await publishFailureSafely(services, task, "invalid_output", signal);
+        await publishFailureSafely(
+          services,
+          task,
+          "invalid_output",
+          signal,
+          execution,
+        );
         return { outcome: "failed", errorCategory: "invalid_output" };
       }
 
@@ -153,18 +179,30 @@ export function createIssueAnalysisHandler(
       try {
         related = await services.recallRelated(context);
       } catch {
+        signal.throwIfAborted();
         // The index is an enhancement, never a blocker for the core analysis.
         related = [];
       }
 
+      signal.throwIfAborted();
+      if (execution && !(await execution.beginPublishing()))
+        throw new DOMException(
+          "Task lease was lost before publication",
+          "AbortError",
+        );
+      signal.throwIfAborted();
       await services.publishFinal(task, outcome.analysis, related, signal);
+      signal.throwIfAborted();
       try {
         await services.recordMemory?.(task, outcome.analysis);
       } catch {
+        signal.throwIfAborted();
         // Memory recording is best-effort; never blocks or fails the task.
       }
       return { outcome: "completed" };
     } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof Error && error.name === "AbortError") throw error;
       if (error instanceof GitHubApiError) {
         if (error.category === "not_found")
           return { outcome: "failed", errorCategory: "github_not_found" };
@@ -172,7 +210,13 @@ export function createIssueAnalysisHandler(
           return { outcome: "failed", errorCategory: "github_auth_failed" };
       }
       // 模型不可用等异常同样要收尾占位评论，否则它会一直停在「正在分析」。
-      await publishFailureSafely(services, task, "handler_error", signal);
+      await publishFailureSafely(
+        services,
+        task,
+        "handler_error",
+        signal,
+        execution,
+      );
       throw error;
     }
   };
@@ -184,10 +228,20 @@ async function publishFailureSafely(
   task: LeasedTask,
   errorCategory: string,
   signal: AbortSignal,
+  execution?: TaskExecution,
 ): Promise<void> {
+  if (!services.publishFailure) return;
+  signal.throwIfAborted();
+  if (execution && !(await execution.beginPublishing()))
+    throw new DOMException(
+      "Task lease was lost before failure publication",
+      "AbortError",
+    );
+  signal.throwIfAborted();
   try {
     await services.publishFailure?.(task, errorCategory, signal);
   } catch {
+    signal.throwIfAborted();
     // 忽略：真正的失败原因已由 task_events 记录。
   }
 }

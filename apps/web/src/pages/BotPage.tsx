@@ -1,3 +1,9 @@
+import { BotIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/bot", label: "机器人", group: "identity", order: 31, icon: PageIcon, render: () => <BotPage /> }];
+
 import { useCallback, useEffect, useState } from "react";
 import {
   bumpCache,

@@ -8,6 +8,7 @@ import type {
   ModelCandidate,
   ModelInvocationRequest,
   ModelProviderAdapter,
+  ModelRoutingResult,
   ModelUsage,
 } from "../../../packages/domain/src/index.js";
 import {
@@ -21,6 +22,22 @@ import {
 } from "../../../packages/pr-review/src/index.js";
 import type { IssueContext } from "./context.js";
 import {
+  groundIssueAnalysis,
+  type GroundingPolicy,
+  type EvidenceAudit,
+} from "./evidence.js";
+import {
+  assessIssueTriage,
+  type IssueTriage,
+  type IssueTriagePolicy,
+} from "./triage.js";
+
+/** 分诊和引用审计跟着分析一同入库，原有 result 契约保持不变。 */
+export type IssueAnalysisReport = GradedIssueAnalysis & {
+  triage?: IssueTriage;
+  evidenceAudit?: EvidenceAudit;
+};
+import {
   buildIssueAnalysisMessages,
   buildIssueAnalysisRepairRequest,
   buildIssueAnalysisRequest,
@@ -29,6 +46,10 @@ import {
 } from "./prompt.js";
 
 export type IssueAnalyzerOptions = {
+  /** 默认只报告证据出处；enforce 会剔除不在输入中的引用并重新评级。 */
+  evidenceGrounding?: GroundingPolicy;
+  /** 可选的仓库分诊队列和必填信息策略。 */
+  triagePolicy?: IssueTriagePolicy;
   adapters: ReadonlyMap<string, ModelProviderAdapter>;
   candidates: readonly ModelCandidate[];
   /** Shared logical deadline across main call, retries, and the repair. */
@@ -95,9 +116,7 @@ export type IssueAnalyzerOptions = {
  * 只在 repair 两次都拿不到合法 JSON 之后才咨询这个判定，因此即使放宽也不会把
  * 正常输出 JSON 的分析降级——判定的是「模型确实在写自由文本」的审查请求。
  */
-function isCodeReviewRequest(
-  context: IssueContext,
-): boolean {
+function isCodeReviewRequest(context: IssueContext): boolean {
   const title = context.issue.title ?? "";
   const body = context.issue.body ?? "";
   const hay = `${title}\n${body}`;
@@ -129,7 +148,8 @@ function stripReasoningProse(rawText: string): string {
   let sawSubstance = false;
   for (const line of lines) {
     if (line.length === 0) {
-      if (sawSubstance && kept.length > 0 && kept[kept.length - 1] !== "") kept.push("");
+      if (sawSubstance && kept.length > 0 && kept[kept.length - 1] !== "")
+        kept.push("");
       continue;
     }
     // 列出的缺陷条目：列表标记、代码符号、编号、行号引用等——视为实质内容。
@@ -139,18 +159,31 @@ function stripReasoningProse(rawText: string): string {
       /[^\x00-\x7F]/.test(line);
     // 纯英文思考样板：自我指令 / 复述任务 / 规划输出。
     const isRecap =
-      /^(we|i|you|the|our|my)\s+(need|should|must|can|have|are|will|want)\b/i.test(line) ||
-      /^(now|please|note|remember|careful|importantly|first|finally|in\s+conclusion|to\s+comply|let['’]?s)\b/i.test(line) ||
-      /(must|need to|should)\s+(output|produce|return|follow|comply|provide|be)\b/i.test(line) ||
-      /(output should|please output|valid json|json object|per contract|as required|according to (the )?(prompt|instruction|contract)|contract compliance|comply: category|category bug|produce valid)/i.test(line);
+      /^(we|i|you|the|our|my)\s+(need|should|must|can|have|are|will|want)\b/i.test(
+        line,
+      ) ||
+      /^(now|please|note|remember|careful|importantly|first|finally|in\s+conclusion|to\s+comply|let['’]?s)\b/i.test(
+        line,
+      ) ||
+      /(must|need to|should)\s+(output|produce|return|follow|comply|provide|be)\b/i.test(
+        line,
+      ) ||
+      /(output should|please output|valid json|json object|per contract|as required|according to (the )?(prompt|instruction|contract)|contract compliance|comply: category|category bug|produce valid)/i.test(
+        line,
+      );
     if (isSubstance || !isRecap) {
       kept.push(line);
       if (isSubstance) sawSubstance = true;
     }
   }
-  const cleaned = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const cleaned = kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   // 清洗后若连一条实质内容都没有（全是思考模板），退回原文兜底，不丢信息。
-  return cleaned.length >= 40 || rawText.trim().length < 40 ? cleaned : rawText.trim();
+  return cleaned.length >= 40 || rawText.trim().length < 40
+    ? cleaned
+    : rawText.trim();
 }
 
 /**
@@ -165,12 +198,17 @@ function lenientCodeReviewOutcome(
   candidate: ModelCandidate,
   attempts: readonly ModelAttemptOutcome[],
   durationMs: number,
-): { outcome: "valid"; analysis: GradedIssueAnalysis; usage: ModelUsage; candidate: ModelCandidate; attempts: readonly ModelAttemptOutcome[]; durationMs: number } {
+): {
+  outcome: "valid";
+  analysis: GradedIssueAnalysis;
+  usage: ModelUsage;
+  candidate: ModelCandidate;
+  attempts: readonly ModelAttemptOutcome[];
+  durationMs: number;
+} {
   const trimmed = stripReasoningProse(rawText ?? "");
   const summary =
-    trimmed.length > 0
-      ? trimmed.slice(0, 2_000)
-      : "（模型未返回具体缺陷清单）";
+    trimmed.length > 0 ? trimmed.slice(0, 2_000) : "（模型未返回具体缺陷清单）";
   const analysis: GradedIssueAnalysis = {
     result: {
       contractVersion: "issue-analysis/v1",
@@ -213,7 +251,7 @@ function lenientCodeReviewOutcome(
 export type IssueAnalysisOutcome =
   | {
       outcome: "valid";
-      analysis: GradedIssueAnalysis;
+      analysis: IssueAnalysisReport;
       usage: ModelUsage;
       candidate: ModelCandidate;
       attempts: readonly ModelAttemptOutcome[];
@@ -244,15 +282,47 @@ function totalUsage(...usage: readonly ModelUsage[]): ModelUsage {
  * 依据：标题 / 正文中的关键词与标签。feature 常见词：功能/新增/支持/建议/希望/
  * 能否/添加/优化；bug 常见词：报错/失败/bug/崩溃/异常/无法/不能/坏了。
  */
-function guessIssueCategory(context: IssueContext): "bug" | "feature" | "other" {
+function guessIssueCategory(
+  context: IssueContext,
+): "bug" | "feature" | "other" {
   const issue = context.issue;
   const title = issue.title ?? "";
   const body = issue.body ?? "";
   const labels = issue.labels ?? [];
   const hay = `${title}\n${body}\n${labels.join(" ")}`.toLowerCase();
 
-  const featureWords = ["feature", "feat:", "feat ", "enhancement", "新增", "添加", "支持", "建议", "希望", "能否", "功能", "优化", "需求"];
-  const bugWords = ["bug", "fix", "fix:", "报错", "错误", "失败", "异常", "崩溃", "无法", "不能", "坏了", "卡", "闪退", "崩溃", "死"];
+  const featureWords = [
+    "feature",
+    "feat:",
+    "feat ",
+    "enhancement",
+    "新增",
+    "添加",
+    "支持",
+    "建议",
+    "希望",
+    "能否",
+    "功能",
+    "优化",
+    "需求",
+  ];
+  const bugWords = [
+    "bug",
+    "fix",
+    "fix:",
+    "报错",
+    "错误",
+    "失败",
+    "异常",
+    "崩溃",
+    "无法",
+    "不能",
+    "坏了",
+    "卡",
+    "闪退",
+    "崩溃",
+    "死",
+  ];
   const featureCount = featureWords.filter((w) => hay.includes(w)).length;
   const bugCount = bugWords.filter((w) => hay.includes(w)).length;
   if (bugCount > featureCount) return "bug";
@@ -286,7 +356,8 @@ function resolveResultSections(
   category: string,
 ): ReadonlySet<IssueResultSection> | undefined {
   if (!options.sectionsByCategory) return options.sections;
-  const key = category === "bug" || category === "feature" ? category : "default";
+  const key =
+    category === "bug" || category === "feature" ? category : "default";
   return (
     options.sectionsByCategory[key] ??
     options.sectionsByCategory.default ??
@@ -362,9 +433,10 @@ export async function analyzeIssue(
   const remainingMsFrom = () =>
     Math.max(0, options.deadlineMs - (now() - startedAt));
 
-  /** 单次模型调用，共享同一个逻辑 deadline。 */
-  const invokeOnce = (request: ModelInvocationRequest) =>
-    routeModelInvocation(options.adapters, {
+  // 所有成功路由结果在同一处收集：工具探索、修复的 token 都有账可查。
+  const invocations: ModelRoutingResult[] = [];
+  const invokeOnce = async (request: ModelInvocationRequest) => {
+    const result = await routeModelInvocation(options.adapters, {
       candidates: options.candidates,
       request,
       deadlineMs: remainingMsFrom(),
@@ -373,6 +445,9 @@ export async function analyzeIssue(
       now,
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
     });
+    invocations.push(result);
+    return result;
+  };
 
   // 空响应重试（与 pr-review 工具循环的 invokeWithEmptyRetry 同策略）：部分
   // reasoning 模型（如 DeepSeek/MiniMax 渠道）在携带预读源码的大请求下偶发
@@ -391,29 +466,15 @@ export async function analyzeIssue(
     }
   };
 
-  // 工具探索复用 PR 审查已验证的循环实现，它自行构造请求并注入工具定义。
-  // 仍保留 main 这次路由调用：candidate 供修复阶段 sticky，attempts/usage
-  // 供 attempt 记账，两者都无法从循环内部获得。代价是开启探索时多一次调用，
-  // 这也是该能力默认关闭的原因之一。
-  //
-  // codeAccess 随 tools 同步注入提示词：有工具 → 模型可读源码，路径可精确；
-  // 无工具 → 系统消息末尾追加「当前代码访问」段落，明令禁止编造文件路径。
+  // 开启探索时直接进入工具循环，避免先花一次模型调用再丢弃其回答。
   const codeAccess: "enabled" | "disabled" = options.tools
     ? "enabled"
     : "disabled";
-  const main = await invokeOnceWithEmptyRetry(
-    buildIssueAnalysisRequest(
-      context,
-      options.promptVersion,
-      options.promptMode,
-      resolvePromptSections(options, context),
-      codeAccess,
-    ),
-  );
-  let mainContent = main.response.content;
+  let mainContent: string;
   if (options.tools) {
     const loop = await runToolLoop(
-      (request) => invokeOnceWithEmptyRetry(request).then((result) => result.response),
+      (request) =>
+        invokeOnceWithEmptyRetry(request).then((result) => result.response),
       buildIssueAnalysisMessages(
         context,
         options.promptVersion,
@@ -428,7 +489,7 @@ export async function analyzeIssue(
           "你可以调用 read_file / list_directory / get_git_info 查看仓库源码，" +
           "以定位这个 Issue 涉及的真实代码位置（缺陷类：问题出在哪个文件；" +
           "功能请求 / enhancement 类：相关功能现状在哪个文件、改动应落在哪）。请先定位再作答：\n" +
-          "- 第一步必须用 list_directory 且 path 传空字符串 \"\" 查看仓库根目录，" +
+          '- 第一步必须用 list_directory 且 path 传空字符串 "" 查看仓库根目录，' +
           "再据结果用相对路径进子目录；绝对路径与 /home/user/repos/... 这类仓库名/用户目录前缀一律无效，不要编造。\n" +
           "- 优先读 README 等文档，理解该功能 / 命令 / 指令的正确使用与触发方式，" +
           "据此判断报告者的操作是否符合预期（很多「指令没反应 / 按钮不存在」其实是触发方式问题，先自查再下结论）。\n" +
@@ -446,9 +507,36 @@ export async function analyzeIssue(
           : { forceToolUse: options.tools.forceToolUse }),
       },
     );
-    mainContent =
-      loop.messages[loop.messages.length - 1]?.content ?? main.response.content;
+    mainContent = loop.messages[loop.messages.length - 1]?.content ?? "";
+  } else {
+    const result = await invokeOnceWithEmptyRetry(
+      buildIssueAnalysisRequest(
+        context,
+        options.promptVersion,
+        options.promptMode,
+        resolvePromptSections(options, context),
+        codeAccess,
+      ),
+    );
+    mainContent = result.response.content;
   }
+  const main = invocations.at(-1)!; // 两条分支都至少完成一次模型调用。
+  const mainUsage = totalUsage(
+    ...invocations.map((invocation) => invocation.response.usage),
+  );
+  const mainAttempts = invocations.flatMap((invocation) => invocation.attempts);
+  const report = (analysis: GradedIssueAnalysis): IssueAnalysisReport => {
+    const grounded = groundIssueAnalysis(
+      analysis,
+      context,
+      options.evidenceGrounding,
+    );
+    return {
+      ...grounded.analysis,
+      evidenceAudit: grounded.audit,
+      triage: assessIssueTriage(context, options.triagePolicy),
+    };
+  };
 
   // exploredCode 决定服务端是否保留 proposedChanges 的行号定位。
   const gradingOptions = { exploredCode: options.tools !== undefined };
@@ -456,13 +544,15 @@ export async function analyzeIssue(
   if (validation.outcome === "valid") {
     return {
       outcome: "valid",
-      analysis: applyResultSections(
-        validation.analysis,
-        resolveResultSections(options, validation.analysis.result.category),
+      analysis: report(
+        applyResultSections(
+          validation.analysis,
+          resolveResultSections(options, validation.analysis.result.category),
+        ),
       ),
-      usage: main.response.usage,
+      usage: mainUsage,
       candidate: main.candidate,
-      attempts: main.attempts,
+      attempts: mainAttempts,
       durationMs: now() - startedAt,
     };
   }
@@ -493,15 +583,17 @@ export async function analyzeIssue(
     repair.response.content,
     gradingOptions,
   );
-  const attempts = [...main.attempts, ...repair.attempts];
-  const usage = totalUsage(main.response.usage, repair.response.usage);
+  const attempts = [...mainAttempts, ...repair.attempts];
+  const usage = totalUsage(mainUsage, repair.response.usage);
 
   if (repaired.outcome === "valid") {
     return {
       outcome: "valid",
-      analysis: applyResultSections(
-        repaired.analysis,
-        resolveResultSections(options, repaired.analysis.result.category),
+      analysis: report(
+        applyResultSections(
+          repaired.analysis,
+          resolveResultSections(options, repaired.analysis.result.category),
+        ),
       ),
       usage,
       candidate: repair.candidate,
@@ -517,13 +609,14 @@ export async function analyzeIssue(
   if (isCodeReviewRequest(context)) {
     const raw = repair.response.content.trim();
     if (raw.length > 0) {
-      return lenientCodeReviewOutcome(
+      const fallback = lenientCodeReviewOutcome(
         raw,
         usage,
         repair.candidate,
         attempts,
         now() - startedAt,
       );
+      return { ...fallback, analysis: report(fallback.analysis) };
     }
   }
 

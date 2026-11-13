@@ -1,3 +1,9 @@
+import { SlidersIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/analysis", label: "分析设置", group: "data", order: 42, icon: PageIcon, render: () => <AnalysisSettingsPage /> }];
+
 import { navigate } from "../hooks/useHash";
 import { SettingsSection } from "../components/SettingsSection";
 

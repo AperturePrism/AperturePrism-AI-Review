@@ -1,4 +1,10 @@
-import type { ParsedDiff, DiffFile, DiffHunk } from "./diff.js";
+/**
+ * 模型上下文：把变更压进明确预算，并记录实际可见行供覆盖报告使用。
+ * 调用：const context = renderDiffForModel(parseUnifiedDiff(diff));
+ * maxTokens 是字符估算预算，真实请求仍应预留系统提示词和模型输出空间。
+ */
+import type { ParsedDiff, DiffFile, DiffHunk, DiffLine } from "./diff.js";
+import { estimateReviewTokens, renderNumberedDiffLine } from "./plan.js";
 
 /** A parsed file that actually has text hunks (not binary, not empty). */
 type TextDiffFile = DiffFile & { hunks: readonly DiffHunk[] };
@@ -54,6 +60,10 @@ export const DEFAULT_PR_REVIEW_BUDGET: PrReviewBudget = {
 
 export type RenderedPrContext = {
   diff: ParsedDiff;
+  /** 记录实际渲染预算，报告使用同一份范围计算覆盖。 */
+  renderBudget?: PrReviewBudget;
+  /** 真正进入提示词的行，避免覆盖报告把截断部分误算为已读。 */
+  visibleLines?: Readonly<Record<string, readonly DiffLine[]>>;
   keptFiles: readonly DiffFile[];
   /** Files mentioned by name only because they were not inlined. */
   listedFiles: readonly string[];
@@ -78,53 +88,67 @@ export function renderDiffForModel(
   diff: ParsedDiff,
   budget: PrReviewBudget = DEFAULT_PR_REVIEW_BUDGET,
 ): RenderedPrContext {
+  if (
+    ![budget.maxTokens, budget.maxInlineFiles, budget.maxLinesPerFile].every(
+      (value) => Number.isSafeInteger(value) && value >= 0,
+    )
+  ) {
+    throw new Error("审查上下文预算必须是非负整数");
+  }
   const degraded: string[] = [];
   const textFiles: TextDiffFile[] = diff.files.filter(
-    (f): f is TextDiffFile => f.hunks !== null && f.hunks.length > 0,
+    (file): file is TextDiffFile =>
+      file.hunks !== null && file.hunks.length > 0,
   );
-
   const byChurn = [...textFiles].sort(
-    (a, b) =>
-      b.additions + b.deletions - (a.additions + a.deletions),
+    (left, right) =>
+      right.additions + right.deletions - left.additions - left.deletions,
   );
-
   const keptFiles: TextDiffFile[] = [];
   const listedFiles: string[] = [];
-
+  const visibleLines: Record<string, readonly DiffLine[]> = Object.create(
+    null,
+  ) as Record<string, readonly DiffLine[]>;
+  let remaining = budget.maxTokens;
   for (const file of byChurn) {
-    if (keptFiles.length < budget.maxInlineFiles) {
-      keptFiles.push(file);
-    } else {
+    if (keptFiles.length >= budget.maxInlineFiles) {
       listedFiles.push(file.newPath);
+      continue;
     }
+    const allLines = file.hunks.flatMap((hunk) => hunk.lines);
+    const candidates = truncateDiffLines(allLines, budget.maxLinesPerFile);
+    if (candidates.length < allLines.length)
+      degraded.push("large_file_head_tail_only");
+    const selected: DiffLine[] = [];
+    let tokens = estimateReviewTokens(`### ${file.newPath}\n\n`);
+    for (const line of candidates) {
+      const cost = estimateReviewTokens(renderNumberedDiffLine(line) + "\n");
+      if (tokens + cost > remaining) break;
+      selected.push(line);
+      tokens += cost;
+    }
+    if (selected.length < candidates.length)
+      degraded.push("diff_token_budget_reached");
+    if (!selected.length) {
+      listedFiles.push(file.newPath);
+      continue;
+    }
+    keptFiles.push(file);
+    visibleLines[file.newPath] = selected;
+    remaining -= tokens;
   }
-
   for (const file of diff.files) {
-    if (!file.hunks || file.hunks.length === 0) {
-      listedFiles.push(file.newPath);
-    }
+    if (!file.hunks || file.hunks.length === 0) listedFiles.push(file.newPath);
   }
-
-  if (listedFiles.length > 0) degraded.push("some_files_listed_only");
-
-  const limit = budget.maxLinesPerFile;
-  const trimmed = keptFiles.map((file) => ({
-    file,
-    totalLines: file.hunks.reduce((sum, h) => sum + h.lines.length, 0),
-  }));
-
-  let kept = true;
-  for (const entry of trimmed) {
-    if (entry.totalLines > limit) {
-      kept = false;
-      break;
-    }
-  }
-  if (!kept) degraded.push("large_file_head_tail_only");
-
-  // Deduplicate listed files that also appear in keptFiles (defensive).
-  const listed = [...new Set(listedFiles)];
-  return { diff, keptFiles, listedFiles: listed, degraded };
+  if (listedFiles.length) degraded.push("some_files_listed_only");
+  return {
+    diff,
+    renderBudget: { ...budget },
+    visibleLines,
+    keptFiles,
+    listedFiles: [...new Set(listedFiles)],
+    degraded: [...new Set(degraded)],
+  };
 }
 
 /** Renders the kept hunks for the prompt, truncated per file head+tail. */
@@ -133,22 +157,38 @@ export function renderHunksText(
   budget: PrReviewBudget = DEFAULT_PR_REVIEW_BUDGET,
 ): string {
   const chunks: string[] = [];
+  const actualBudget = context.renderBudget ?? budget;
   for (const file of context.keptFiles) {
     if (!file.hunks) continue;
-    const lines = file.hunks.flatMap((hunk) =>
-      hunk.lines.map((entry) => `${entry.kind === "add" ? "+" : entry.kind === "delete" ? "-" : " "}${entry.text}`),
-    );
-    const body =
-      lines.length > budget.maxLinesPerFile
-        ? [...lines.slice(0, Math.floor(budget.maxLinesPerFile / 2)), "…", ...lines.slice(-Math.floor(budget.maxLinesPerFile / 2))].join("\n")
-        : lines.join("\n");
-    chunks.push(`### ${file.newPath}\n\`\`\`\n${body}\n\`\`\``);
+    const lines =
+      context.visibleLines?.[file.newPath] ??
+      truncateDiffLines(
+        file.hunks.flatMap((hunk) => hunk.lines),
+        actualBudget.maxLinesPerFile,
+      );
+    const body = lines.map(renderNumberedDiffLine).join("\n");
+    // 行号保留真实 afterLine，分块中间的空缺不会被误认成连续源码。
+    chunks.push(`### ${file.newPath}\n${body}`);
   }
   if (context.listedFiles.length > 0) {
-    chunks.push(`其他变更文件（仅列出）:\n${context.listedFiles.map((p) => `- ${p}`).join("\n")}`);
+    chunks.push(
+      `其他变更文件（仅列出）:\n${context.listedFiles.map((p) => `- ${p}`).join("\n")}`,
+    );
   }
   if (context.degraded.length > 0) {
     chunks.push(`注意：diff 已降级：${context.degraded.join("、")}。`);
   }
   return chunks.join("\n\n");
+}
+
+/** 按首尾保留完整行；预算不足两行时只保留开头，避免 slice(-0) 复制整份内容。 */
+export function truncateDiffLines(
+  lines: readonly DiffLine[],
+  limit: number,
+): readonly DiffLine[] {
+  if (lines.length <= limit) return lines;
+  if (limit === 0) return [];
+  const head = Math.ceil(limit / 2);
+  const tail = Math.floor(limit / 2);
+  return [...lines.slice(0, head), ...(tail > 0 ? lines.slice(-tail) : [])];
 }

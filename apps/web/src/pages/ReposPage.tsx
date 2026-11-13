@@ -1,3 +1,9 @@
+import { FolderIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/repos", label: "已安装仓库", group: "data", order: 40, icon: PageIcon, render: () => <ReposPage /> }];
+
 import { useCallback, useEffect, useState } from "react";
 import {
   bumpCache,

@@ -1,4 +1,11 @@
+/**
+ * 审查发布：把已验证契约转换为 GitHub review，使用持久化键避免重复发布。
+ * 调用：await publishAssessment({ store, github, taskId, installationId, owner, name,
+ *   pullNumber, revision, review, assessment: outcome.assessment })。
+ * assessment 可选；传入后才采用其抑制、覆盖与门禁，便于渐进启用。
+ */
 import type { PrReviewContract } from "./types.js";
+import { assessedReview, type ReviewAssessment } from "./assessment.js";
 
 /**
  * The persisted bookkeeping a publication needs. The worker supplies a
@@ -45,6 +52,9 @@ export type PublishReviewInput = {
   pullNumber: number;
   revision: string;
   review: PrReviewContract;
+  assessment?: ReviewAssessment;
+  /** 任务取消或租约丢失时禁止开始新的外部发布。 */
+  signal?: AbortSignal;
 };
 
 export type PublishReviewResult = {
@@ -60,7 +70,11 @@ export function reviewEventTone(
   return "COMMENT";
 }
 
-export function renderReviewBody(review: PrReviewContract): string {
+export function renderReviewBody(
+  original: PrReviewContract,
+  assessment?: ReviewAssessment,
+): string {
+  const review = assessment ? assessedReview(assessment) : original; // 正式 review 与摘要评论必须采用同一套抑制和门禁。
   const lines: string[] = [`## 审查总结`, review.summary, ""];
   if (review.findings.length > 0) {
     lines.push(`### 发现的问题 (${review.findings.length})`);
@@ -71,6 +85,23 @@ export function renderReviewBody(review: PrReviewContract): string {
       lines.push(`  - ${finding.message}`);
       lines.push(`  - 建议: ${finding.suggestion}`);
     }
+  }
+  if (assessment) {
+    lines.push("", "### 审查范围与质量门禁", "");
+    lines.push(`- 门禁：${assessment.gate.status}`);
+    lines.push(
+      `- 模型输入覆盖：${(assessment.coverage.changedLineRatio * 100).toFixed(1)}% 变更行；完整文件 ${assessment.coverage.completeFiles}/${assessment.coverage.totalFiles}`,
+    );
+    lines.push(
+      `- 基线：新增 ${assessment.baseline.counts.new}，延续 ${assessment.baseline.counts.existing}，变化 ${assessment.baseline.counts.changed}，已解决 ${assessment.baseline.counts.resolved}`,
+    );
+    lines.push(
+      `- 已接受问题：${assessment.suppressions.suppressed.length}；过期抑制：${assessment.suppressions.expired.length}`,
+    );
+    for (const reason of assessment.gate.reasons)
+      lines.push(`- ${reason.message}`);
+    if (assessment.coverage.changedLineRatio < 1)
+      lines.push("- 上下文覆盖有限，没有发现问题不代表全部变更已检查。");
   }
   return lines.join("\n");
 }
@@ -109,15 +140,24 @@ export function renderInlineComments(
 export async function publishAssessment(
   input: PublishReviewInput,
 ): Promise<PublishReviewResult> {
+  input.signal?.throwIfAborted();
   const idempotencyKey = `pr-review:${input.owner}/${input.name}#${input.pullNumber}:${input.revision}`;
-  const externalObjectId = await input.store.findExternalObjectId(
-    idempotencyKey,
-  );
+  const externalObjectId =
+    await input.store.findExternalObjectId(idempotencyKey);
   if (externalObjectId !== null) {
+    input.signal?.throwIfAborted();
     await input.store.touch(idempotencyKey);
     return { reviewId: Number(externalObjectId), created: false };
   }
-  const published = await publishWithOwnPrFallback(input, reviewEventTone(input.review.overallTone));
+  const publication = input.assessment
+    ? { ...input, review: assessedReview(input.assessment) }
+    : input;
+  input.signal?.throwIfAborted(); // 查询幂等记录期间发生的取消也不能开始外发。
+  const published = await publishWithOwnPrFallback(
+    publication,
+    reviewEventTone(publication.review.overallTone),
+  );
+  // 已经成功外发后必须记下外部 ID；此时取消不能丢掉幂等记录而导致下次重复发布。
   await input.store.insert({
     taskId: input.taskId,
     idempotencyKey,
@@ -140,17 +180,20 @@ async function publishWithOwnPrFallback(
 ): Promise<{ id: number }> {
   const comments = renderInlineComments(input.review);
   try {
+    input.signal?.throwIfAborted();
     return await input.github.publishReview({
       installationId: input.installationId,
       owner: input.owner,
       name: input.name,
       pullNumber: input.pullNumber,
       revision: input.revision,
-      body: renderReviewBody(input.review),
+      body: renderReviewBody(input.review, input.assessment),
       event,
       comments,
     });
   } catch (error) {
+    input.signal?.throwIfAborted();
+    if (error instanceof Error && error.name === "AbortError") throw error;
     // GitHub returns 422 with "Can not request changes on your own pull
     // request" when the bot reviews its own PR. The client maps that to an
     // invalid_request error whose message does not carry the body detail, so
@@ -160,13 +203,14 @@ async function publishWithOwnPrFallback(
       (isGithubStatus(error, 422) ||
         (error instanceof Error && /own pull request/i.test(error.message)));
     if (ownPrRejection) {
+      input.signal?.throwIfAborted();
       return input.github.publishReview({
         installationId: input.installationId,
         owner: input.owner,
         name: input.name,
         pullNumber: input.pullNumber,
         revision: input.revision,
-        body: renderReviewBody(input.review),
+        body: renderReviewBody(input.review, input.assessment),
         event: "COMMENT",
         comments,
       });
@@ -175,13 +219,14 @@ async function publishWithOwnPrFallback(
     // hunk (e.g. a context line). Retry once without them — the review body
     // still carries every finding, so nothing is lost.
     if (comments.length > 0 && isGithubStatus(error, 422)) {
+      input.signal?.throwIfAborted();
       return input.github.publishReview({
         installationId: input.installationId,
         owner: input.owner,
         name: input.name,
         pullNumber: input.pullNumber,
         revision: input.revision,
-        body: renderReviewBody(input.review),
+        body: renderReviewBody(input.review, input.assessment),
         event,
       });
     }

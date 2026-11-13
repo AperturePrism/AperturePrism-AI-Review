@@ -1,3 +1,12 @@
+import { BugIcon as IssuePageIcon, PullRequestIcon as PrPageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** Issue 与 PR 共用结果查看器，路由参数在声明处固定，避免散落两个入口。 */
+export const consolePages: ConsolePage[] = [
+  { path: "/issues", label: "Issue 分析", group: "analysis", order: 20, icon: IssuePageIcon, render: () => <ResultsPage type="issue" label="Issue 分析" /> },
+  { path: "/pr", label: "PR 审查", group: "analysis", order: 21, icon: PrPageIcon, render: () => <ResultsPage type="pr" label="PR 审查" /> },
+];
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   bumpCache,
