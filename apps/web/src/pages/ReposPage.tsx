@@ -23,6 +23,8 @@ import { explainError, explainUnknown } from "../lib/errors";
 import { enumOptionLabel } from "../lib/labels";
 import { useToast } from "../components/Toast";
 import { navigate } from "../hooks/useHash";
+import { AUTO_MERGE_SETTING_KEYS, AutoMergePanel } from "../components/AutoMergePanel";
+import { ManualReviewBatch } from "../components/ManualReviewBatch";
 
 /**
  * 未覆盖时的实际生效值：仓库覆盖 → 全局 → 应用默认。
@@ -117,7 +119,7 @@ function RepoSettings({ repo }: { repo: Repository }) {
         <LoadingRows />
       ) : (
         <div className="stack" style={{ gap: 10 }}>
-          {items.map((item) => {
+          {items.filter((item) => !AUTO_MERGE_SETTING_KEYS.has(item.key)).map((item) => {
             const busy = busyKey === item.key;
             const on = effectiveBool(item);
             return (
@@ -248,11 +250,14 @@ export function ReposPage() {
   const [triggerRepo, setTriggerRepo] = useState<string>("");
   const [triggerNumber, setTriggerNumber] = useState<string>("");
   const [triggerBusy, setTriggerBusy] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
   const [subjects, setSubjects] = useState<RepoSubjectItem[]>([]);
   const [subjectsBusy, setSubjectsBusy] = useState(false);
   const [subjectsError, setSubjectsError] = useState<string | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [autoMergeRepository, setAutoMergeRepository] = useState<string | null>(null);
   const toast = useToast();
+  const selectedAutoMergeRepository = repos?.find((repo) => repo.id === autoMergeRepository);
 
   const sync = async () => {
     setSyncBusy(true);
@@ -307,12 +312,13 @@ export function ReposPage() {
     if (!triggerRepo) {
       setSubjects([]);
       setSubjectsError(null);
+      setSubjectsBusy(false);
       return;
     }
     let cancelled = false;
     setSubjectsBusy(true);
     setSubjectsError(null);
-    fetchRepoSubjects(triggerRepo, triggerType)
+    fetchRepoSubjects(triggerRepo, triggerType, 100)
       .then((items) => {
         if (!cancelled) {
           setSubjects(items);
@@ -401,7 +407,7 @@ export function ReposPage() {
       <section className="panel">
         <div className="panel-title">
           <h2>手动触发分析</h2>
-          <span className="count">对已安装仓库的某个 Issue / PR 立即创建一个分析 / 审查任务</span>
+          <span className="count">审查单个对象，或多选创建持久审查批次</span>
         </div>
         <p className="faint" style={{ margin: "0 0 12px", fontSize: 12 }}>
           选择一个仓库后，下拉会列出它最近的 open Issue / PR（也可手动输入编号）；点击「触发分析」会绕过 Webhook，
@@ -412,8 +418,9 @@ export function ReposPage() {
             className="input"
             style={{ flex: "1 1 220px" }}
             value={triggerRepo}
-            onChange={(event) => setTriggerRepo(event.target.value)}
-            disabled={!repos || repos.length === 0}
+            aria-label="审查仓库"
+            onChange={(event) => { setSubjects([]); setTriggerNumber(""); setSubjectsError(null); setTriggerRepo(event.target.value); }}
+            disabled={!repos || repos.length === 0 || triggerBusy || batchBusy}
           >
             <option value="">{repos && repos.length > 0 ? "选择仓库…" : "暂无可选仓库"}</option>
             {repos?.map((repo) => (
@@ -426,7 +433,9 @@ export function ReposPage() {
             className="input"
             style={{ flex: "0 1 120px" }}
             value={triggerType}
-            onChange={(event) => setTriggerType(event.target.value === "pr" ? "pr" : "issue")}
+            aria-label="审查对象类型"
+            onChange={(event) => { setSubjects([]); setTriggerNumber(""); setSubjectsError(null); setTriggerType(event.target.value === "pr" ? "pr" : "issue"); }}
+            disabled={triggerBusy || batchBusy}
           >
             <option value="issue">Issue</option>
             <option value="pr">PR</option>
@@ -436,7 +445,7 @@ export function ReposPage() {
             style={{ flex: "1 1 260px", maxWidth: 360 }}
             value={subjects.some((s) => String(s.number) === triggerNumber) ? triggerNumber : ""}
             onChange={(event) => setTriggerNumber(event.target.value)}
-            disabled={!triggerRepo || subjects.length === 0}
+            disabled={!triggerRepo || subjects.length === 0 || triggerBusy || batchBusy}
           >
             <option value="">
               {!triggerRepo
@@ -463,10 +472,11 @@ export function ReposPage() {
             step={1}
             placeholder="编号，如 12"
             value={triggerNumber}
+            disabled={triggerBusy || batchBusy}
             onChange={(event) => setTriggerNumber(event.target.value)}
             data-lpignore="true"
           />
-          <button className="btn btn-primary" onClick={trigger} disabled={triggerBusy || !triggerRepo}>
+          <button className="btn btn-primary" onClick={trigger} disabled={triggerBusy || batchBusy || !triggerRepo}>
             {triggerBusy ? "触发中…" : "触发分析"}
           </button>
         </div>
@@ -475,6 +485,7 @@ export function ReposPage() {
             无法加载 Issue / PR 列表：{subjectsError} 仍可手动输入编号后触发。
           </p>
         ) : null}
+        <ManualReviewBatch repository={triggerRepo} type={triggerType} subjects={subjects} loading={subjectsBusy} listError={subjectsError} disabled={triggerBusy} onBusyChange={setBatchBusy} />
       </section>
 
       <section className="panel">
@@ -513,11 +524,15 @@ export function ReposPage() {
                   <span className="pill pill-ok">{repo.resultCount} 结果</span>
                 </div>
                 <RepoSettings repo={repo} />
+                <button className="btn" type="button" style={{ marginTop: 10, fontSize: 12 }} onClick={() => setAutoMergeRepository(repo.id)} aria-expanded={autoMergeRepository === repo.id}>
+                  检查通过自动合并
+                </button>
               </div>
             ))}
           </div>
         )}
       </section>
+      {selectedAutoMergeRepository ? <AutoMergePanel key={selectedAutoMergeRepository.id} repo={selectedAutoMergeRepository} onClose={() => setAutoMergeRepository(null)} /> : null}
     </div>
   );
 }

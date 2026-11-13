@@ -72,6 +72,9 @@ describe("registry integrity", () => {
       "issue_rewrite_title",
       "issue_use_unified_sections",
       "issue_vision_enabled",
+      "pr_auto_merge_enabled",
+      "pr_auto_merge_method",
+      "pr_auto_merge_required_checks",
       "repo_rules_enabled",
       "repo_rules_url",
       "spam_handling",
@@ -113,6 +116,7 @@ describe("parseBool + BOOLEAN_DEFAULTS pin current behaviour", () => {
     for (const key of [
       "issue_auto_assign",
       "agent_team_enabled",
+      "pr_auto_merge_enabled",
     ]) {
       const def = BOOLEAN_DEFAULTS[key]!;
       expect(def).toBe(false);

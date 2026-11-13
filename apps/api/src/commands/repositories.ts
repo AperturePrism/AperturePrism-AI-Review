@@ -5,7 +5,10 @@
  */
 import { parseJsonObject } from "../utils/http.js";
 import type { HttpRoute } from "../utils/routes.js";
-import { getSettingSpec } from "../../../../packages/config/src/index.js";
+import {
+  AUTO_MERGE_SETTING_KEYS,
+  getSettingSpec,
+} from "../../../../packages/config/src/index.js";
 import {
   repositories,
   subjectResults,
@@ -712,6 +715,23 @@ export async function handleRepositorySettings(
       return;
     }
     const key = typeof parsed.key === "string" ? parsed.key : null;
+    if (
+      key &&
+      AUTO_MERGE_SETTING_KEYS.some((autoMergeKey) => autoMergeKey === key)
+    ) {
+      json(
+        response,
+        400,
+        {
+          status: "error",
+          reason: "auto_merge_settings_require_atomic_endpoint",
+          message:
+            "请使用 PUT /repositories/:id/auto-merge/settings 原子更新自动合并配置。",
+        },
+        requestId,
+      );
+      return;
+    }
     if (!key || !isRepositorySettingKey(key)) {
       json(
         response,

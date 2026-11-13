@@ -33,6 +33,7 @@ import {
 } from "../../../packages/pr-review/src/index.js";
 import { recordAttemptUsage } from "../../../packages/task-engine/src/index.js";
 import { beginCheckRun } from "./check-run.js";
+import { queueReviewedAutoMerge } from "./auto-merge.js";
 import { assertGithub } from "./github.js";
 import { type TaskHandler } from "./loop.js";
 import { repoMemoryText, resolveRepositoryId } from "./memory.js";
@@ -345,6 +346,7 @@ export function createPullRequestWorkflow(
         repositoryFullName: payload.repositoryFullName,
         revision: payload.subjectRevision,
         result: { ...review, ...(assessment ? { assessment } : {}) },
+        execution: task,
       });
       // 先写持久 outbox，再异步交付；工作台暂时不可用不会丢掉同步任务。
       await queueReviewWorkbenchSync(database.sql, task.id, {
@@ -372,6 +374,23 @@ export function createPullRequestWorkflow(
             "review workbench sync deferred",
           ),
       });
+      const repositoryId = await resolveRepositoryId(
+        payload.repositoryFullName,
+      );
+      if (repositoryId)
+        await queueReviewedAutoMerge(
+          database.db,
+          {
+            taskId: task.id,
+            repositoryId,
+            installationId: payload.installationId,
+            repositoryFullName: payload.repositoryFullName,
+            pullNumber: payload.subjectNumber,
+            headSha: payload.subjectRevision,
+            result: { ...review, ...(assessment ? { assessment } : {}) },
+          },
+          signal,
+        );
     },
 
     beginCheckRun: async (task) => {

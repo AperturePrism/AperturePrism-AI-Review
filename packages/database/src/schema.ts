@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   customType,
   index,
   integer,
@@ -347,6 +348,72 @@ export const subjectResults = pgTable(
       table.subjectType,
       table.subjectNumber,
       table.createdAt,
+    ),
+  ],
+);
+
+/** 审查授权后的持久合并意图；调度器仍逐次确认任务、版本和 GitHub 检查。 */
+export const pullRequestAutoMerges = pgTable(
+  "pull_request_auto_merges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => analysisTasks.id, { onDelete: "cascade" }),
+    repositoryId: uuid("repository_id")
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    installationId: text("installation_id").notNull(),
+    repositoryFullName: text("repository_full_name").notNull(),
+    pullNumber: integer("pull_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    method: text("method")
+      .$type<"merge" | "squash" | "rebase">()
+      .default("squash")
+      .notNull(),
+    status: text("status")
+      .$type<"pending" | "waiting" | "blocked" | "merged" | "canceled">()
+      .default("pending")
+      .notNull(),
+    reason: text("reason").default("awaiting_checks").notNull(),
+    message: text("message"),
+    mergeCommitSha: text("merge_commit_sha"),
+    attempts: integer("attempts").default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("pull_request_auto_merges_task_unique").on(table.taskId),
+    index("pull_request_auto_merges_pending_idx")
+      .on(table.nextAttemptAt, table.id)
+      .where(sql`${table.status} in ('pending', 'waiting', 'blocked')`),
+    index("pull_request_auto_merges_repository_idx").on(
+      table.repositoryId,
+      table.createdAt,
+    ),
+    check(
+      "pull_request_auto_merges_pull_positive",
+      sql`${table.pullNumber} > 0`,
+    ),
+    check(
+      "pull_request_auto_merges_attempts_nonnegative",
+      sql`${table.attempts} >= 0`,
+    ),
+    check(
+      "pull_request_auto_merges_method_valid",
+      sql`${table.method} in ('merge', 'squash', 'rebase')`,
+    ),
+    check(
+      "pull_request_auto_merges_status_valid",
+      sql`${table.status} in ('pending', 'waiting', 'blocked', 'merged', 'canceled')`,
     ),
   ],
 );
