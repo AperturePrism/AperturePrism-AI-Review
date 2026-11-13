@@ -432,3 +432,37 @@ describe("GitHub API client", () => {
     expect(ok).toBe(false);
   });
 });
+
+
+describe("installation repository pagination", () => {
+  const repository = (id: number) => ({ id, owner: { login: "o" }, name: `r${id}`, full_name: `o/r${id}` });
+  const fullPage = Array.from({ length: 100 }, (_, index) => repository(index + 1));
+
+  it("returns repositories beyond the first page and forwards cancellation", async () => {
+    const { client, calls } = clientWith(withToken((call) => {
+      const page = new URL(call.url).searchParams.get("page");
+      return jsonResponse({ total_count: 101, repositories: page === "2" ? [repository(101)] : fullPage });
+    }));
+    const controller = new AbortController();
+    const repos = await client.listInstallationRepositories("42", controller.signal);
+    expect(repos).toHaveLength(101);
+    expect(repos.at(-1)).toEqual({ id: 101, owner: "o", name: "r101", fullName: "o/r101" });
+    const requests = calls.filter((call) => call.url.includes("/installation/repositories"));
+    expect(requests.map((call) => new URL(call.url).search)).toEqual(["?per_page=100&page=1", "?per_page=100&page=2"]);
+    expect(requests.every((call) => call.init.signal === controller.signal)).toBe(true);
+  });
+
+  it("stops after an empty first page", async () => {
+    const { client, calls } = clientWith(withToken(() => jsonResponse({ repositories: [] })));
+    expect(await client.listInstallationRepositories("42")).toEqual([]);
+    expect(calls.filter((call) => call.url.includes("/installation/repositories"))).toHaveLength(1);
+  });
+
+  it("does not report partial synchronization as success when a later page fails", async () => {
+    const { client } = clientWith(withToken((call) => {
+      if (new URL(call.url).searchParams.get("page") === "2") return jsonResponse({ message: "unavailable" }, { status: 503 });
+      return jsonResponse({ repositories: fullPage });
+    }));
+    await expect(client.listInstallationRepositories("42")).rejects.toMatchObject({ category: "server_error", status: 503 });
+  });
+});
