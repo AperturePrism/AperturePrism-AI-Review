@@ -138,54 +138,38 @@ async function publishWithOwnPrFallback(
   input: PublishReviewInput,
   event: "COMMENT" | "APPROVE" | "REQUEST_CHANGES",
 ): Promise<{ id: number }> {
-  const comments = renderInlineComments(input.review);
-  try {
-    return await input.github.publishReview({
-      installationId: input.installationId,
-      owner: input.owner,
-      name: input.name,
-      pullNumber: input.pullNumber,
-      revision: input.revision,
-      body: renderReviewBody(input.review),
-      event,
-      comments,
-    });
-  } catch (error) {
-    // GitHub returns 422 with "Can not request changes on your own pull
-    // request" when the bot reviews its own PR. The client maps that to an
-    // invalid_request error whose message does not carry the body detail, so
-    // degrade on (event, status) rather than message text.
-    const ownPrRejection =
-      event === "REQUEST_CHANGES" &&
-      (isGithubStatus(error, 422) ||
-        (error instanceof Error && /own pull request/i.test(error.message)));
-    if (ownPrRejection) {
-      return input.github.publishReview({
+  let comments: ReturnType<typeof renderInlineComments> | undefined =
+    renderInlineComments(input.review);
+  let currentEvent = event;
+  for (;;) {
+    try {
+      return await input.github.publishReview({
         installationId: input.installationId,
         owner: input.owner,
         name: input.name,
         pullNumber: input.pullNumber,
         revision: input.revision,
         body: renderReviewBody(input.review),
-        event: "COMMENT",
-        comments,
+        event: currentEvent,
+        ...(comments === undefined ? {} : { comments }),
       });
+    } catch (error) {
+      // An invalid inline anchor can produce the same 422 as an own-PR
+      // rejection. Remove anchors first, preserving the model's review event.
+      if (comments && comments.length > 0 && isGithubStatus(error, 422)) {
+        comments = undefined;
+        continue;
+      }
+      const ownPrRejection =
+        currentEvent === "REQUEST_CHANGES" &&
+        (isGithubStatus(error, 422) ||
+          (error instanceof Error && /own pull request/i.test(error.message)));
+      if (ownPrRejection) {
+        currentEvent = "COMMENT";
+        continue;
+      }
+      throw error;
     }
-    // Inline comments also 422 when an anchored line is not inside the diff
-    // hunk (e.g. a context line). Retry once without them — the review body
-    // still carries every finding, so nothing is lost.
-    if (comments.length > 0 && isGithubStatus(error, 422)) {
-      return input.github.publishReview({
-        installationId: input.installationId,
-        owner: input.owner,
-        name: input.name,
-        pullNumber: input.pullNumber,
-        revision: input.revision,
-        body: renderReviewBody(input.review),
-        event,
-      });
-    }
-    throw error;
   }
 }
 
