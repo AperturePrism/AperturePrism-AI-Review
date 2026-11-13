@@ -128,12 +128,10 @@ describe("工作台 HTTP 边界", () => {
       }),
     );
     const blob = await workbench.report("owner/repo", "markdown");
-    const text = await new Promise<string>((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.readAsText(blob);
-    });
-    expect(text).toBe("# Review\n");
+    // 只校验 Blob 的元数据：jsdom 的 Blob 未实现 text()/arrayBuffer()，而 fetch
+    // 返回的 Blob 与 FileReader 不同 realm，直接读取会抛 TypeError。
+    expect(blob.size).toBe(new TextEncoder().encode("# Review\n").length);
+    expect(blob.type).toContain("text/markdown");
     expect(String(fetchMock.mock.calls[0]![0])).toContain("format=markdown");
   });
   it("非法仓库在发起网络请求前拒绝", async () => {
