@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { eq } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import * as schema from "../../../packages/database/src/schema.js";
@@ -339,42 +340,37 @@ async function runUpdate(
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  const handleChunk = (chunk: Buffer): void => {
-    for (const line of chunk.toString("utf8").split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const parsed = JSON.parse(trimmed) as {
-          level?: string;
-          stage?: string;
-          message?: string;
-        };
-        // update.sh emits {"level":"stage","stage":"backup","message":"备份配置"}
-        // so the WebUI can advance a progress bar instead of only dumping logs.
-        if (parsed.level === "stage") {
-          seq += 1;
-          response.write(
-            serializeSseEvent({
-              seq,
-              type: "stage",
-              data: { stage: parsed.stage ?? "unknown", message: parsed.message ?? "" },
-            }),
-          );
-        } else {
-          push(parsed.level ?? "info", parsed.message ?? trimmed);
-        }
-      } catch {
-        push("info", trimmed);
+  const stdout = createLineReader((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        level?: string;
+        stage?: string;
+        message?: string;
+      };
+      if (parsed.level === "stage") {
+        seq += 1;
+        response.write(
+          serializeSseEvent({
+            seq,
+            type: "stage",
+            data: { stage: parsed.stage ?? "unknown", message: parsed.message ?? "" },
+          }),
+        );
+      } else {
+        push(parsed.level ?? "info", parsed.message ?? trimmed);
       }
-    }
-  };
-  child.stdout.on("data", handleChunk);
-  child.stderr.on("data", (chunk) => {
-    for (const line of chunk.toString("utf8").split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed) push("warn", trimmed);
+    } catch {
+      push("info", trimmed);
     }
   });
+  const stderr = createLineReader((line) => {
+    const trimmed = line.trim();
+    if (trimmed) push("warn", trimmed);
+  });
+  child.stdout.on("data", (chunk: Buffer) => stdout.write(chunk));
+  child.stderr.on("data", (chunk: Buffer) => stderr.write(chunk));
 
   child.on("error", (error) => {
     updateRunning = false;
@@ -383,6 +379,8 @@ async function runUpdate(
   });
 
   child.on("close", (code) => {
+    stdout.end();
+    stderr.end();
     updateRunning = false;
     const ok = code === 0;
     push(ok ? "info" : "error", ok ? `更新完成（${target}）` : `更新脚本退出码 ${code}`);
@@ -487,6 +485,29 @@ async function writeHistory(
 }
 
 /* ---------- helpers ---------- */
+
+/** Child-process data chunks need not end at a line or UTF-8 boundary. */
+function createLineReader(onLine: (line: string) => void): {
+  write: (chunk: Buffer) => void;
+  end: () => void;
+} {
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  const consume = (text: string): void => {
+    const lines = (pending + text).split(/\r\n|\r|\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) onLine(line);
+  };
+  return {
+    write: (chunk) => consume(decoder.write(chunk)),
+    end: () => {
+      consume(decoder.end());
+      if (pending) onLine(pending);
+      pending = "";
+    },
+  };
+}
+
 
 function json(response: ServerResponse, status: number, body: unknown, requestId: string): void {
   response.writeHead(status, {
