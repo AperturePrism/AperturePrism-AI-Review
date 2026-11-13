@@ -3850,6 +3850,8 @@ async function handleSettings(
         repoScoped: spec?.repoScoped ?? false,
         hotReload: spec?.hotReload ?? "poll",
         ...(spec?.options ? { options: spec.options } : {}),
+        ...(spec?.multiline ? { multiline: true } : {}),
+        ...(spec?.maxLength !== undefined ? { maxLength: spec.maxLength } : {}),
         // source 是这次交互改造的核心：用户终于能看出「我改的到底生效没、
         // 现在这个值是谁给的」。
         source: resolved.source,

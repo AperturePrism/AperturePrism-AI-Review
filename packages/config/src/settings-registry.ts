@@ -50,7 +50,13 @@ export type SettingSpec = {
   hint: string;
   /** enum / multicheck 的合法取值（仅这两种 kind 有意义）。 */
   options?: readonly string[];
+  /** 自由文本使用多行编辑器，保存时保留换行与缩进。 */
+  multiline?: boolean;
+  /** 保存与读取时的文本长度上限（字符）。 */
+  maxLength?: number;
 };
+
+export const MAX_GLOBAL_REVIEW_RULES_CHARS = 16_000;
 
 /**
  * 注册表本体。顺序即 WebUI 内分组内的展示顺序。
@@ -153,6 +159,19 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
   },
   // ── Issue 分析 ──
   {
+    key: "review_rules_global",
+    group: "issue",
+    kind: "string",
+    secret: false,
+    repoScoped: false,
+    envVar: null,
+    hotReload: "poll",
+    label: "全局审核规则",
+    hint: "适用于所有仓库的 Issue 分析、PR 审查与 PR 专家团队。与仓库目录及外部链接规则叠加，不受「仓库审核规则」开关影响；留空或回落默认可停用。最多 16000 字符，保存后对新分析生效，无需重启",
+    multiline: true,
+    maxLength: MAX_GLOBAL_REVIEW_RULES_CHARS,
+  },
+  {
     key: "repo_rules_enabled",
     group: "issue",
     kind: "boolean",
@@ -161,7 +180,7 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
     envVar: null,
     hotReload: "poll",
     label: "仓库审核规则",
-    hint: "开启后读取仓库 .apertureprism/rules/ 目录下的规则文件并注入 Issue/PR 分析；仓库首次分析时若目录不存在会自动创建示例规则文件。可在此设全局默认，也可在「已安装仓库」页按仓库单独覆盖",
+    hint: "开启后读取仓库 .apertureprism/rules/ 目录和外部链接规则并注入 Issue/PR 分析；仓库首次分析时若目录不存在会自动创建示例规则文件。可按仓库覆盖；关闭不影响「全局审核规则」",
   },
   {
     key: "repo_rules_url",
@@ -702,6 +721,8 @@ export function validateSettingValue(
 ): string | null {
   const spec = getSettingSpec(key);
   if (!spec) return "未知设置键";
+  if (spec.maxLength !== undefined && value.length > spec.maxLength)
+    return `最多允许 ${spec.maxLength} 个字符`;
 
   if (spec.kind === "boolean") {
     if (value !== "true" && value !== "false")

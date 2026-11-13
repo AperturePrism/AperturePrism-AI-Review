@@ -3,6 +3,7 @@ import {
   ALLOWED_SETTING_KEYS,
   BOOLEAN_DEFAULTS,
   KNOWN_SETTING_KEYS,
+  MAX_GLOBAL_REVIEW_RULES_CHARS,
   REPO_SCOPED_SETTING_KEYS,
   SECRET_SETTING_KEYS,
   SETTINGS_REGISTRY,
@@ -87,6 +88,7 @@ describe("registry integrity", () => {
       "github_app_private_key",
       "pr_check_run",
       "scan_enabled",
+      "review_rules_global",
     ]) {
       expect(getSettingSpec(key)?.repoScoped).toBe(false);
     }
@@ -228,6 +230,40 @@ describe("validateSettingValue", () => {
     expect(validateSettingValue("qq_bot_protocols", "{oops")).not.toBeNull();
     // 空串表示清空，交给写入侧处理，不在这里拦。
     expect(validateSettingValue("qq_bot_protocols", "")).toBeNull();
+  });
+
+  it("exposes bounded multiline global review rules through the existing settings API", () => {
+    expect(getSettingSpec("review_rules_global")).toMatchObject({
+      kind: "string",
+      repoScoped: false,
+      secret: false,
+      hotReload: "poll",
+      multiline: true,
+      maxLength: MAX_GLOBAL_REVIEW_RULES_CHARS,
+    });
+    expect(ALLOWED_SETTING_KEYS).toContain("review_rules_global");
+    expect(KNOWN_SETTING_KEYS).toContain("review_rules_global");
+    expect(REPO_SCOPED_SETTING_KEYS).not.toContain("review_rules_global");
+  });
+
+  it("allows empty/multiline global rules and rejects text beyond the limit", () => {
+    expect(validateSettingValue("review_rules_global", "")).toBeNull();
+    expect(validateSettingValue("review_rules_global", "  \n\t")).toBeNull();
+    expect(
+      validateSettingValue("review_rules_global", "# Rules\n  - keep indentation\n"),
+    ).toBeNull();
+    expect(
+      validateSettingValue(
+        "review_rules_global",
+        "规".repeat(MAX_GLOBAL_REVIEW_RULES_CHARS),
+      ),
+    ).toBeNull();
+    expect(
+      validateSettingValue(
+        "review_rules_global",
+        "规".repeat(MAX_GLOBAL_REVIEW_RULES_CHARS + 1),
+      ),
+    ).toContain(String(MAX_GLOBAL_REVIEW_RULES_CHARS));
   });
 
   it("does not constrain free-form strings and secrets", () => {

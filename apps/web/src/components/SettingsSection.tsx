@@ -219,6 +219,42 @@ export function SettingField({
           busy={busy}
           canRevert={canRevert}
         />
+      ) : item.multiline ? (
+        <div className="stack" style={{ marginTop: 10 }}>
+          <textarea
+            className="input"
+            aria-label={item.label}
+            aria-describedby={`setting-${item.key}-hint`}
+            rows={8}
+            maxLength={item.maxLength}
+            value={draft}
+            disabled={busy}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => save(item.key, draft)}
+              disabled={
+                busy ||
+                draft === item.value ||
+                (item.maxLength !== undefined && draft.length > item.maxLength)
+              }
+            >
+              {busy ? "保存中…" : "保存"}
+            </button>
+            {canRevert ? (
+              <button className="btn" disabled={busy} onClick={() => clear(item.key)}>
+                {item.envConfigured ? "回落环境变量" : "回落默认"}
+              </button>
+            ) : null}
+            {item.maxLength !== undefined ? (
+              <span className="faint" style={{ fontSize: 12 }}>
+                {draft.length}/{item.maxLength} 字符
+              </span>
+            ) : null}
+          </div>
+        </div>
       ) : (
         <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <input
@@ -262,7 +298,7 @@ export function SettingField({
           已轮换：旧值保留至 {fmtTime(item.rotation.previousExpiresAt ?? "")}，点「回滚旧值」可恢复。
         </p>
       ) : null}
-      <p className="faint" style={{ margin: "8px 0 0", fontSize: 12 }}>{item.hint}</p>
+      <p id={`setting-${item.key}-hint`} className="faint" style={{ margin: "8px 0 0", fontSize: 12 }}>{item.hint}</p>
     </div>
   );
 }
@@ -319,7 +355,11 @@ export function SettingsSection({
     setItems((prev) =>
       prev.map((item) => byKey.get(item.key) ?? item),
     );
-    setDrafts((prev) => ({ ...prev, [key]: "" }));
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   };
 
   const labelOf = (key: string) =>
@@ -375,7 +415,7 @@ export function SettingsSection({
             <SettingField
               key={item.key}
               item={item}
-              draft={drafts[item.key] ?? ""}
+              draft={drafts[item.key] ?? (item.multiline ? item.value : "")}
               setDraft={(value) =>
                 setDrafts((prev) => ({ ...prev, [item.key]: value }))
               }

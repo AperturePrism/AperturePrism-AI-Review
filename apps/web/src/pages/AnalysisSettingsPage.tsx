@@ -13,8 +13,13 @@ export function AnalysisSettingsPage() {
       </div>
 
       <SettingsSection
+        keys={["review_rules_global", "repo_rules_enabled"]}
+        title="审核规则"
+        desc="全局规则统一注入所有 Issue / PR 分析及 PR 专家团队，并与仓库目录、外部链接规则叠加；仓库规则开关只控制目录与外部链接，不影响全局规则"
+      />
+
+      <SettingsSection
         keys={[
-          "repo_rules_enabled",
           "spam_handling",
           "issue_auto_assign",
           "issue_assignee",
