@@ -1,16 +1,16 @@
 {
   "name": "@apertureprism/scan-worker",
   "private": true,
-  "version": "1.2.15",
+  "version": "1.2.16",
   "type": "module",
   "dependencies": {
-    "@apertureprism/config": "1.2.15",
-    "@apertureprism/database": "1.2.15",
-    "@apertureprism/github-adapter": "1.2.15",
-    "@apertureprism/issue-analysis": "1.2.15",
-    "@apertureprism/observability": "1.2.15",
-    "@apertureprism/pr-review": "1.2.15",
-    "@apertureprism/task-engine": "1.2.15"
+    "@apertureprism/config": "1.2.16",
+    "@apertureprism/database": "1.2.16",
+    "@apertureprism/github-adapter": "1.2.16",
+    "@apertureprism/issue-analysis": "1.2.16",
+    "@apertureprism/observability": "1.2.16",
+    "@apertureprism/pr-review": "1.2.16",
+    "@apertureprism/task-engine": "1.2.16"
   },
   "scripts": {
     "build": "tsc",
