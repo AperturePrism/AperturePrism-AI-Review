@@ -118,7 +118,26 @@ async function post(
       `channel responded with ${response.status}: ${text.slice(0, 200)}`,
     );
   }
-  return response.json().catch(() => ({}));
+  const result: unknown = await response.json().catch(() => ({}));
+  if (typeof result === "object" && result !== null) {
+    const { status, retcode } = result as {
+      status?: unknown;
+      retcode?: unknown;
+    };
+    // OneBot's retcode=1 with status=async means accepted, not failed.
+    const acceptedAsync = status === "async" && retcode === 1;
+    if (
+      status === "failed" ||
+      (typeof retcode === "number" && retcode !== 0 && !acceptedAsync)
+    ) {
+      throw new ChannelConnectorError(
+        typeof retcode === "number"
+          ? `channel action failed: retcode ${retcode}`
+          : "channel action failed: status failed",
+      );
+    }
+  }
+  return result;
 }
 
 function extractOneBotId(response: unknown): number | null {

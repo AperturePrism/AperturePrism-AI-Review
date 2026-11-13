@@ -103,3 +103,35 @@ describe("channel connector send", () => {
     ).rejects.toThrow(/500/);
   });
 });
+
+describe("channel action responses", () => {
+  it.each([
+    { status: "failed", retcode: 100, data: null },
+    { status: "failed", data: null },
+    { retcode: 1404, data: null },
+  ])("rejects an HTTP 200 action failure: %j", async (result) => {
+    const { base } = connectorWith(() => jsonResponse(result));
+    await expect(
+      sendChannelMessage(base, {
+        protocol: "onebot11",
+        scene: "group",
+        peerId: "1",
+        text: "done",
+      }),
+    ).rejects.toMatchObject({ name: "ChannelConnectorError" });
+  });
+
+  it("continues accepting asynchronous OneBot responses", async () => {
+    const { base } = connectorWith(() =>
+      jsonResponse({ status: "async", retcode: 1, data: null }),
+    );
+    await expect(
+      sendChannelMessage(base, {
+        protocol: "onebot11",
+        scene: "group",
+        peerId: "1",
+        text: "done",
+      }),
+    ).resolves.toMatchObject({ protocol: "onebot11", peerId: "1" });
+  });
+});
