@@ -135,6 +135,40 @@ type StreamState = {
   finishReason: string | null;
 };
 
+/**
+ * 优先遵循 SSE 多行 data 语义。少数网关会漏写 chat chunk 间的空行；
+ * 仅当每行都是完整、明确标识的 chat chunk 才恢复，坏行不能被静默丢弃。
+ * 全组解析通过后才交付正文，避免后面的坏行让半组内容提前流出。
+ */
+function eventChunks(data: string): Record<string, unknown>[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch {
+    const lines = data.split("\n");
+    if (lines.length < 2) throw invalid("stream event was not valid JSON");
+    const chunks = lines.map((line) => {
+      let chunk: Record<string, unknown> | null;
+      try {
+        chunk = object(JSON.parse(line));
+      } catch {
+        throw invalid("stream event was not valid JSON");
+      }
+      if (
+        !chunk ||
+        chunk.object !== "chat.completion.chunk" ||
+        !Array.isArray(chunk.choices)
+      )
+        throw invalid("stream event was not valid JSON");
+      return chunk;
+    });
+    return chunks;
+  }
+  const chunk = object(value);
+  if (!chunk) throw invalid("stream chunk must be an object");
+  return [chunk];
+}
+
 function readEvent(
   event: ServerSentEvent,
   state: StreamState,
@@ -145,15 +179,17 @@ function readEvent(
     state.done = true;
     return;
   }
-  let value: unknown;
-  try {
-    value = JSON.parse(event.data);
-  } catch {
-    throw invalid("stream event was not valid JSON");
-  }
-  const chunk = object(value);
-  if (!chunk) throw invalid("stream chunk must be an object");
-  if (event.event === "error" || chunk.error !== undefined)
+  for (const chunk of eventChunks(event.data))
+    readChunk(chunk, event.event, state, options);
+}
+
+function readChunk(
+  chunk: Record<string, unknown>,
+  eventType: string,
+  state: StreamState,
+  options: StreamReadOptions,
+): void {
+  if (eventType === "error" || chunk.error !== undefined)
     throw new ModelInvocationError(
       "server_error",
       "provider sent a stream error",

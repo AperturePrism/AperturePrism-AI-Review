@@ -103,6 +103,153 @@ describe("OpenAI streamed completion", () => {
     expect(result.content).toBe("你好");
   });
 
+  it("recovers complete chat chunks joined by a gateway's missing empty line", async () => {
+    const source = encoder.encode(
+      `data: ${JSON.stringify({ object: "chat.completion.chunk", choices: [{ index: 0, delta: {} }] })}\n` +
+        `data: ${JSON.stringify({ object: "chat.completion.chunk", ...delta("真实流式🐾") })}\n\n` +
+        event({
+          choices: [],
+          usage: { prompt_tokens: 21, completion_tokens: 5 },
+        }) +
+        "data: [DONE]\n\n",
+    );
+    const parts: string[] = [];
+    expect(
+      await readOpenAIStream(
+        responseFrom([...source].map((byte) => new Uint8Array([byte]))),
+        { onText: (part) => parts.push(part) },
+      ),
+    ).toEqual({
+      content: "真实流式🐾",
+      usage: { inputTokens: 21, outputTokens: 5 },
+    });
+    expect(parts).toEqual(["真实流式🐾"]);
+  });
+
+  it("preserves standard multiline JSON data rather than splitting JSON fragments", async () => {
+    const source =
+      'data: {"choices": [\n' +
+      'data: {"index":0,"delta":{"content":"多行 JSON"}}\n' +
+      "data: ]}\n\n" +
+      "data: [DONE]\n\n";
+    expect((await readOpenAIStream(responseText(source))).content).toBe(
+      "多行 JSON",
+    );
+  });
+
+  it("rejects an entire joined event before emitting if any data line is invalid or unrecognized", async () => {
+    const first = JSON.stringify({
+      object: "chat.completion.chunk",
+      ...delta("must not emit"),
+    });
+    for (const last of [
+      "{broken}",
+      JSON.stringify(delta("missing chunk identity")),
+      JSON.stringify({ object: "chat.completion.chunk" }),
+      JSON.stringify({ object: "something.else", choices: [] }),
+      "[DONE]",
+      "42",
+    ]) {
+      const parts: string[] = [];
+      await expect(
+        readOpenAIStream(
+          responseText(`data: ${first}\ndata: ${last}\n\ndata: [DONE]\n\n`),
+          {
+            onText: (part) => parts.push(part),
+          },
+        ),
+      ).rejects.toMatchObject({ category: "invalid_output" });
+      expect(parts).toEqual([]);
+    }
+  });
+
+  it("keeps event size, tool and truncation limits when recovering joined chunks", async () => {
+    const joined = (last: unknown) =>
+      `data: ${JSON.stringify({ object: "chat.completion.chunk", ...delta("first") })}\n` +
+      `data: ${JSON.stringify({ object: "chat.completion.chunk", ...(last as object) })}\n\n` +
+      "data: [DONE]\n\n";
+    await expect(
+      readOpenAIStream(responseText(joined(delta("second"))), {
+        maxEventBytes: 100,
+      }),
+    ).rejects.toMatchObject({ category: "invalid_output" });
+    await expect(
+      readOpenAIStream(
+        responseText(
+          joined({ choices: [{ delta: { tool_calls: [{ index: 8 }] } }] }),
+        ),
+        { maxToolCalls: 1 },
+      ),
+    ).rejects.toMatchObject({ category: "invalid_output" });
+    await expect(
+      readOpenAIStream(
+        responseText(
+          joined({
+            choices: [
+              { delta: { content: "partial" }, finish_reason: "length" },
+            ],
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ category: "invalid_output" });
+    const withoutDone = joined(delta("second")).replace("data: [DONE]\n\n", "");
+    await expect(
+      readOpenAIStream(responseText(withoutDone)),
+    ).rejects.toMatchObject({ category: "invalid_output" });
+  });
+
+  it("merges tool arguments across recovered chunks and preserves error-event classification", async () => {
+    const chunks = [
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_a",
+                  function: { name: "read", arguments: '{"path":' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [{ index: 0, function: { arguments: '"a.ts"}' } }],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      },
+      { choices: [], usage: { prompt_tokens: 8, completion_tokens: 4 } },
+    ];
+    const joined =
+      chunks
+        .map(
+          (chunk) =>
+            `data: ${JSON.stringify({ object: "chat.completion.chunk", ...chunk })}`,
+        )
+        .join("\n") + "\n\n";
+    expect(
+      await readOpenAIStream(responseText(joined + "data: [DONE]\n\n")),
+    ).toEqual({
+      content: "",
+      usage: { inputTokens: 8, outputTokens: 4 },
+      toolCalls: [{ id: "call_a", name: "read", arguments: '{"path":"a.ts"}' }],
+    });
+    const parts: string[] = [];
+    await expect(
+      readOpenAIStream(responseText("event: error\n" + joined), {
+        onText: (part) => parts.push(part),
+      }),
+    ).rejects.toMatchObject({ category: "server_error" });
+    expect(parts).toEqual([]);
+  });
+
   it("merges fragmented and interleaved tool calls in index order", async () => {
     const source =
       event({
