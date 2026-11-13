@@ -412,3 +412,50 @@ describe("runExpertReview", () => {
     expect(adapter.calls()).toBe(5);
   });
 });
+
+describe("expert usage accounting on degraded reviews", () => {
+  it("counts paid responses even when every expert repair remains invalid", async () => {
+    const adapter = adaptiveAdapter({
+      expertMain: () => "invalid",
+      expertRepair: "still invalid",
+      leadMain: validPrJson,
+    });
+    const outcome = await runExpertReview(deps(adapter), input);
+    expect(outcome.outcome).toBe("valid");
+    expect(outcome.experts).toBe(0);
+    expect(outcome.usage).toEqual({ inputTokens: 90, outputTokens: 45 });
+    expect(outcome.attempts).toHaveLength(9);
+  });
+
+  it("keeps the paid main response and attempt when an expert repair fails", async () => {
+    const base = adaptiveAdapter({
+      expertMain: () => "invalid",
+      leadMain: validPrJson,
+    });
+    const adapter: ModelProviderAdapter = {
+      provider: base.provider,
+      invoke: async (candidate, request, signal) => {
+        if (
+          !request.messages[0]?.content.includes("主编（lead reviewer）") &&
+          request.messages.at(-1)?.content.includes("修正")
+        ) {
+          throw new ModelInvocationError(
+            "server_error",
+            "repair transport failed",
+          );
+        }
+        return base.invoke(candidate, request, signal);
+      },
+    };
+    const outcome = await runExpertReview(deps(adapter), input);
+    expect(outcome.outcome).toBe("valid");
+    expect(outcome.experts).toBe(0);
+    expect(outcome.usage).toEqual({ inputTokens: 50, outputTokens: 25 });
+    expect(outcome.attempts).toHaveLength(9);
+    expect(
+      outcome.attempts.filter(
+        (attempt) => attempt.errorCategory === "server_error",
+      ),
+    ).toHaveLength(4);
+  });
+});
