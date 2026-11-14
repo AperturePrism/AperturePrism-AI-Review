@@ -33,6 +33,7 @@ export default defineConfig({
       "/results": proxyTarget,
       "/providers": proxyTarget,
       "/repositories": proxyTarget,
+      "/repo-rules": proxyTarget,
       "/logs": proxyTarget,
       "/vector": proxyTarget,
       "/config": proxyTarget,

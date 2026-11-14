@@ -14,7 +14,7 @@
 | `postgres` | pgvector/pgvector:pg16 | 业务数据 + `issue_documents` 向量 |
 | `redis` | redis:7-alpine | SSE 广播与任务事件分发 |
 
-进程之间通过 `DATABASE_URL` / `REDIS_URL` 协作；AI 凭据由 worker 用 `CREDENTIAL_MASTER_KEY` 解密 `provider_accounts`。
+进程之间通过 `DATABASE_URL` / `REDIS_URL` 协作；AI 凭据通过 `CREDENTIAL_MASTER_KEY` 在服务端解密。worker 用于模型调用，API 可为已保存账号读取模型列表，原密钥不会回传到浏览器。
 
 ## 2. 首次部署
 

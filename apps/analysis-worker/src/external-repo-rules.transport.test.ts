@@ -139,12 +139,17 @@ describe("external repo rules native HTTP transport", () => {
       const outcome = startDownload(undefined, controller.signal);
       const { request, response } = await sendHeaders(socket, 1_000);
       expect(request.writableFinished).toBe(true);
-      controller.abort(new Error("cancelled after headers"));
+      const reason = new Error("cancelled after headers");
+      controller.abort(reason);
       expect(socket.destroyed).toBe(true);
       await expect(outcome).resolves.toMatchObject({
         outcome: "error",
-        error: { code: "ECONNRESET" },
+        error: reason,
       });
+      const canceled = await outcome;
+      expect(canceled.outcome === "error" ? canceled.error : undefined).toBe(
+        reason,
+      );
       expect(request.destroyed).toBe(true);
       expect(response.destroyed).toBe(true);
     });
@@ -159,12 +164,17 @@ describe("external repo rules native HTTP transport", () => {
       await withSocket(async (socket) => {
         const outcome = startDownload();
         const { request, response } = await sendHeaders(socket, 1_000);
-        deadline.abort(new Error("deadline exceeded"));
+        const reason = new DOMException("deadline exceeded", "TimeoutError");
+        deadline.abort(reason);
         expect(socket.destroyed).toBe(true);
         await expect(outcome).resolves.toMatchObject({
           outcome: "error",
-          error: { code: "ECONNRESET" },
+          error: { name: "TimeoutError" },
         });
+        const expired = await outcome;
+        expect(expired.outcome === "error" ? expired.error : undefined).toBe(
+          reason,
+        );
         expect(request.destroyed).toBe(true);
         expect(response.destroyed).toBe(true);
         expect(timeout).toHaveBeenCalledWith(15_000);

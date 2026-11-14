@@ -18,11 +18,11 @@ export function AnalysisSettingsPage() {
         </div>
       </div>
 
-      <SettingsSection
-        keys={["review_rules_global", "repo_rules_enabled"]}
-        title="审核规则"
-        desc="全局规则统一注入所有 Issue / PR 分析及 PR 专家团队，并与仓库目录、外部链接规则叠加；仓库规则开关只控制目录与外部链接，不影响全局规则"
-      />
+      <section className="panel">
+        <div className="panel-title"><h2>审核规则</h2></div>
+        <p className="faint">全局审核规则、文件与链接导入，以及仓库规则默认开关已集中到「审核规则」页管理。</p>
+        <button className="btn" onClick={() => navigate("/repo-rules")}>前往「审核规则」</button>
+      </section>
 
       <SettingsSection
         keys={[

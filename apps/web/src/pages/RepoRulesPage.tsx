@@ -29,6 +29,7 @@ import {
 } from "../components/icons";
 import { Empty, ErrorPanel, LoadingRows } from "../components/ui";
 import { explainUnknown } from "../lib/errors";
+import { GlobalRulesEditor } from "../components/GlobalRulesEditor";
 
 /**
  * 仓库审核规则功能页：集中查看每个仓库的 .apertureprism/rules/ 状态，切换开关，
@@ -79,13 +80,20 @@ export function RepoRulesPage() {
         <div>
           <h1 className="page-title">审核规则</h1>
           <p className="page-desc">
-            仓库级审核规则（<code>.apertureprism/rules/</code>）：集中管理各仓库的规则开关与规则文件
+            集中管理全局审核规则、文件与链接导入，以及各仓库的规则文件。
           </p>
         </div>
         <button className="btn" disabled={loading} onClick={load}>
-          <ArrowPathIcon size={14} /> 刷新
+          <ArrowPathIcon size={14} /> 刷新仓库列表
         </button>
       </div>
+
+      <GlobalRulesEditor />
+
+      <section className="panel">
+        <h2>仓库审核规则</h2>
+        <p className="faint">各仓库的 <code>.apertureprism/rules/</code> 目录与规则开关；会与上面的全局规则共同应用。</p>
+      </section>
 
       {error ? (
         <ErrorPanel error={error} onRetry={load} />
@@ -98,7 +106,7 @@ export function RepoRulesPage() {
           hint={
             githubConfigured
               ? "在「已安装仓库」页同步仓库后，即可在此管理各仓库的审核规则"
-              : "先在「GitHub 接入」页配置 GitHub App，才能管理审核规则"
+              : "先在「GitHub 接入」页配置 GitHub App，才能管理仓库内的规则文件；全局规则不依赖 GitHub"
           }
         />
       ) : (

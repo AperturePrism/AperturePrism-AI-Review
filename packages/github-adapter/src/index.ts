@@ -3,6 +3,7 @@ import type { CreateTaskInput } from "../../../packages/domain/src/index.js";
 
 export * from "./client.js";
 export * from "./rules.js";
+export * from "./rule-source.js";
 
 export type GitHubEventName =
   "issues" | "issue_comment" | "pull_request" | "ping";
