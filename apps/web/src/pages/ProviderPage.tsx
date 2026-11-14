@@ -51,10 +51,13 @@ function AddProviderForm({
   onSaved,
   onCancel,
   initial,
+  initialModel,
 }: {
   onSaved: () => void;
   onCancel?: () => void;
   initial?: ProviderAccount;
+  /** 编辑时回填该账户当前在用的模型，避免只改地址时被「模型必填」挡住。 */
+  initialModel?: string;
 }) {
   const toast = useToast();
   const apiKeyId = useId();
@@ -64,7 +67,7 @@ function AddProviderForm({
   const [apiKey, setApiKey] = useState("");
   const [replacingKey, setReplacingKey] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(initialModel ?? "");
   const [accountName, setAccountName] = useState(initial?.name ?? "");
   const [models, setModels] = useState<string[]>([]);
   const [probing, setProbing] = useState(false);
@@ -378,6 +381,16 @@ export function ProviderPage() {
 
   useEffect(() => load(), [load]);
 
+  // 编辑已有账户时回填当前候选里的模型：只改 Base URL 也能直接保存。
+  const modelFor = (account: ProviderAccount) =>
+    data?.policies
+      .flatMap((policy) => policy.candidates)
+      .find(
+        (candidate) =>
+          candidate.provider === account.provider &&
+          candidate.accountName === account.name,
+      )?.model ?? "";
+
   return (
     <div className="stack">
       <div className="page-head">
@@ -514,6 +527,7 @@ export function ProviderPage() {
         <AddProviderForm
           key={`edit:${editing.provider}:${editing.name}`}
           initial={editing}
+          initialModel={modelFor(editing)}
           onCancel={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);

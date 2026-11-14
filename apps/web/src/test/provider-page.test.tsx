@@ -407,4 +407,36 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
       "password",
     );
   });
+
+  it("回填账户当前模型，只改 Base URL 也能直接保存", async () => {
+    fetchProviders.mockResolvedValue({
+      policies: [
+        {
+          role: "review",
+          version: "v1",
+          candidates: [
+            { provider: "p", accountName: "p-main", model: "model-live" },
+          ],
+        },
+      ],
+      accounts: [
+        { provider: "p", name: "p-main", baseUrl: "https://api.example.com/v1" },
+      ],
+    });
+    const form = await openEditor();
+    expect(form.getByPlaceholderText(/模型名/)).toHaveValue("model-live");
+    const baseUrl = form.getByPlaceholderText(/Base URL/);
+    await user.clear(baseUrl);
+    await user.type(baseUrl, "https://changed.example.com/v1");
+    await user.click(form.getByRole("button", { name: "保存修改" }));
+    await waitFor(() =>
+      expect(saveProvider).toHaveBeenCalledWith({
+        provider: "p",
+        baseUrl: "https://changed.example.com/v1",
+        apiKey: "",
+        model: "model-live",
+        accountName: "p-main",
+      }),
+    );
+  });
 });
