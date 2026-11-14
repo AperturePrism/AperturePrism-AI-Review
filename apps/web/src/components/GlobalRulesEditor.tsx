@@ -8,7 +8,6 @@ import {
   type GlobalRulesSnapshot,
 } from "../lib/api/global-rules";
 import { explainUnknown } from "../lib/errors";
-import { SettingsSection } from "./SettingsSection";
 import { ErrorPanel, fmtTime, LoadingRows } from "./ui";
 
 type ImportPreview = { content: string; source: string };
@@ -388,13 +387,6 @@ export function GlobalRulesEditor() {
           </p>
         )}
       </section>
-      {snapshot?.canManage && !forbidden && (
-        <SettingsSection
-          keys={["repo_rules_enabled"]}
-          title="仓库规则全局默认"
-          desc="此开关只控制仓库目录和外部链接规则；各仓库可以单独覆盖，关闭不影响上面的全局规则。"
-        />
-      )}
     </>
   );
 }

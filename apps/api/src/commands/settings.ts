@@ -131,6 +131,9 @@ export function settingDefaultValue(key: string): string {
   return "";
 }
 
+/** 只能由专用接口管理的设置；通用接口读写会绕过其管理员校验。 */
+const DEDICATED_SETTING_KEYS = new Set(["review_rules_global"]);
+
 /** Runtime settings: GET lists (secret values masked); PUT upserts a key. */
 export async function handleSettings(
   request: IncomingMessage,
@@ -152,6 +155,19 @@ export async function handleSettings(
       return;
     }
     const key = typeof parsed.key === "string" ? parsed.key : null;
+    if (key && DEDICATED_SETTING_KEYS.has(key)) {
+      json(
+        response,
+        400,
+        {
+          status: "error",
+          reason: "dedicated_settings_endpoint_required",
+          message: "该设置只能通过全局审核规则接口修改",
+        },
+        requestId,
+      );
+      return;
+    }
     if (!key || !WRITABLE_SETTING_KEYS.has(key)) {
       json(
         response,
@@ -221,7 +237,9 @@ export async function handleSettings(
     .orderBy(asc(systemSettings.key));
   const byKey = new Map(rows.map((row) => [row.key, row]));
   const items = await Promise.all(
-    KNOWN_SETTING_KEYS.map(async (key) => {
+    KNOWN_SETTING_KEYS.filter(
+      (key) => !DEDICATED_SETTING_KEYS.has(key),
+    ).map(async (key) => {
       const spec = getSettingSpec(key);
       const row = byKey.get(key);
       const envValue = settingEnvValue(key);

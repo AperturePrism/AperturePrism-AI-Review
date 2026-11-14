@@ -21,7 +21,10 @@ export type ProviderOverview = {
 export type ProviderAccount = {
   provider: string;
   name: string;
-  baseUrl: string;
+  /** 仅管理员返回；非管理员看不到环境变量配置的上游地址。 */
+  baseUrl?: string;
+  /** 非管理员可见的可用性标记（是否已保存凭据）。 */
+  available?: boolean;
 };
 
 export type ProviderSaveResult = {

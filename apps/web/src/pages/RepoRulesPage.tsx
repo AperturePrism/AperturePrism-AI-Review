@@ -30,6 +30,7 @@ import {
 import { Empty, ErrorPanel, LoadingRows } from "../components/ui";
 import { explainUnknown } from "../lib/errors";
 import { GlobalRulesEditor } from "../components/GlobalRulesEditor";
+import { SettingsSection } from "../components/SettingsSection";
 
 /**
  * 仓库审核规则功能页：集中查看每个仓库的 .apertureprism/rules/ 状态，切换开关，
@@ -89,6 +90,12 @@ export function RepoRulesPage() {
       </div>
 
       <GlobalRulesEditor />
+
+      <SettingsSection
+        keys={["repo_rules_enabled"]}
+        title="仓库规则全局默认"
+        desc="此开关只控制仓库目录和外部链接规则；各仓库可以单独覆盖，关闭不影响上面的全局规则。"
+      />
 
       <section className="panel">
         <h2>仓库审核规则</h2>

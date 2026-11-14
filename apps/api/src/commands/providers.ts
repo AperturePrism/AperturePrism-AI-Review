@@ -11,7 +11,7 @@ import {
   providerAccounts,
   systemSettings,
 } from "../../../../packages/database/src/index.js";
-import { audit } from "../identity.js";
+import { audit, isAdminRequest } from "../identity.js";
 import { redactDiagnosticText } from "../../../../packages/observability/src/redaction.js";
 import { database, logger, config } from "../runtime.js";
 import { json, parseJsonBody, readBody } from "../utils/http.js";
@@ -22,7 +22,10 @@ import { type ServerResponse, type IncomingMessage } from "node:http";
 export async function handleProviders(
   response: ServerResponse,
   requestId: string,
+  request?: IncomingMessage,
 ): Promise<void> {
+  // 无请求上下文时视为内部管理员调用（测试与安装向导）。
+  const admin = request ? await isAdminRequest(request) : true;
   const [policies, accounts] = await Promise.all([
     database.db
       .select({
@@ -37,6 +40,7 @@ export async function handleProviders(
       .select({
         provider: providerAccounts.provider,
         name: providerAccounts.name,
+        credential: providerAccounts.encryptedCredential,
       })
       .from(providerAccounts)
       .orderBy(asc(providerAccounts.provider)),
@@ -59,11 +63,20 @@ export async function handleProviders(
     200,
     {
       policies,
-      accounts: accounts.map((account) => ({
-        provider: account.provider,
-        name: account.name,
-        baseUrl: baseByProvider.get(account.provider) ?? "",
-      })),
+      accounts: accounts.map((account) =>
+        admin
+          ? {
+              provider: account.provider,
+              name: account.name,
+              baseUrl: baseByProvider.get(account.provider) ?? "",
+            }
+          : {
+              // 非管理员不返回可能来自环境变量的上游地址与凭据细节。
+              provider: account.provider,
+              name: account.name,
+              available: Boolean(account.credential),
+            },
+      ),
     },
     requestId,
   );
@@ -618,7 +631,8 @@ export const routes = [
   {
     path: "/providers",
     methods: ["GET"],
-    handle: (_request, response, id) => handleProviders(response, id),
+    handle: (request, response, id) =>
+      handleProviders(response, id, request),
   },
   {
     path: "/providers/delete",

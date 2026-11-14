@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   baseUrls: {} as Record<string, string>,
   warn: vi.fn(),
   select: vi.fn(),
+  admin: true,
 }));
 vi.mock("../runtime.js", () => ({
   database: { db: { select: (...args: unknown[]) => state.select(...args) } },
@@ -28,7 +29,10 @@ vi.mock("../runtime.js", () => ({
   },
   logger: { warn: (...args: unknown[]) => state.warn(...args) },
 }));
-vi.mock("../identity.js", () => ({ audit: vi.fn() }));
+vi.mock("../identity.js", () => ({
+  audit: vi.fn(),
+  isAdminRequest: async () => state.admin,
+}));
 import { handleProviders, readProviderModels, routes } from "./providers.js";
 import { dispatch } from "../utils/routes.js";
 import { json } from "../utils/http.js";
@@ -74,6 +78,7 @@ async function serve(
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 async function api(admin = true) {
+  state.admin = admin;
   return serve(async (req, res) => {
     if (
       !(await dispatch(routes, req, res, "local-request", {
@@ -168,6 +173,44 @@ describe("saved provider model discovery", () => {
       },
     ]);
     expect(text).not.toContain(secret);
+  });
+  it("hides environment base URLs from non-admin readers", async () => {
+    state.rows = [
+      [],
+      [{ provider: "old", name: "old-main", credential: sealed }],
+      [
+        {
+          key: "model_provider_base_url:old",
+          value: "https://internal.example.test/v1",
+        },
+      ],
+    ];
+    const origin = await api(false);
+    const text = await (await fetch(origin + "/providers")).text();
+    expect(JSON.parse(text).accounts).toEqual([
+      { provider: "old", name: "old-main", available: true },
+    ]);
+    expect(text).not.toContain("internal.example.test");
+    state.rows = [
+      [],
+      [{ provider: "old", name: "old-main", credential: sealed }],
+      [
+        {
+          key: "model_provider_base_url:old",
+          value: "https://internal.example.test/v1",
+        },
+      ],
+    ];
+    const adminOrigin = await api(true);
+    expect(
+      (await (await fetch(adminOrigin + "/providers")).json()).accounts,
+    ).toEqual([
+      {
+        provider: "old",
+        name: "old-main",
+        baseUrl: "https://internal.example.test/v1",
+      },
+    ]);
   });
   it("does not send a saved credential to an unsaved replacement address", async () => {
     const requests = vi.fn();
