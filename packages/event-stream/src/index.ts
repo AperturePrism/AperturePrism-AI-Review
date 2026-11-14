@@ -56,6 +56,10 @@ export function reduceTaskEvent(
   snapshot: TaskSnapshot | null,
   event: TaskEventRecord,
 ): TaskSnapshot {
+  // Reconnects can replay the last event (or an older buffered batch). Folding
+  // it twice would inflate eventCount and could roll a terminal task backward.
+  if (snapshot?.taskId === event.taskId && event.seq <= snapshot.maxSeq)
+    return snapshot;
   return {
     taskId: event.taskId,
     status: statusFromEventType(event.type) ?? snapshot?.status ?? "queued",
