@@ -1716,23 +1716,31 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
     },
 
     listInstallationRepositories: async (installationId, signal) => {
-      const data = await authorized<Record<string, unknown>>(
-        installationId,
-        { method: "GET", path: "/installation/repositories" },
-        signal,
-      );
-      const list = Array.isArray(data.repositories)
-        ? (data.repositories as Record<string, unknown>[])
-        : [];
-      return list.map((repo) => {
-        const owner = objectOr(repo.owner);
-        return {
-          id: numberValue(repo.id),
-          owner: stringValue(owner.login),
-          name: stringValue(repo.name),
-          fullName: stringValue(repo.full_name),
-        };
-      });
+      const repositories: InstalledRepository[] = [];
+      const perPage = 100;
+      for (let page = 1; ; page += 1) {
+        const data = await authorized<Record<string, unknown>>(
+          installationId,
+          {
+            method: "GET",
+            path: `/installation/repositories?per_page=${perPage}&page=${page}`,
+          },
+          signal,
+        );
+        const list = Array.isArray(data.repositories)
+          ? (data.repositories as Record<string, unknown>[])
+          : [];
+        for (const repo of list) {
+          const owner = objectOr(repo.owner);
+          repositories.push({
+            id: numberValue(repo.id),
+            owner: stringValue(owner.login),
+            name: stringValue(repo.name),
+            fullName: stringValue(repo.full_name),
+          });
+        }
+        if (list.length < perPage) return repositories;
+      }
     },
 
     listInstallations: async (signal) => {
