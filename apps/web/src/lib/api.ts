@@ -162,9 +162,14 @@ export type { SetupStatus, SetupInitResult } from "./api/setup";
 export {
   fetchUpdateStatus,
   fetchUpdateHistory,
+  fetchUpdateProgress,
   applyUpdate,
 } from "./api/update";
-export type { UpdateStatus, UpdateHistoryEntry } from "./api/update";
+export type {
+  UpdateStatus,
+  UpdateHistoryEntry,
+  UpdateProgress,
+} from "./api/update";
 export { revokeSubject, fetchResults, deleteResults } from "./api/result";
 export type {
   RevokeResult,

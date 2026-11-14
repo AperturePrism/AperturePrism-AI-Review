@@ -15,7 +15,8 @@ export const routes = [
   {
     path: "/update/status",
     methods: ["GET"],
-    handle: (_request, response, id) => handleUpdateStatus(response, id),
+    handle: (_request, response, id) =>
+      handleUpdateStatus(response, id, database.db),
   },
   {
     path: "/update/history",

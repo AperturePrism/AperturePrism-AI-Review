@@ -667,11 +667,14 @@ export function createWorkbenchBatchDispatcher(options: {
                 batchId: batch.id,
                 itemId: item.id,
               });
-              const task = await tasks.find(workbenchBatchTaskKey(batch, item));
+              // 跨批次任务没有批次专用键；取消只依据已 durable 关联的真实任务 id。
+              const taskId =
+                typeof item.result?.taskId === "string"
+                  ? item.result.taskId
+                  : null;
               if (
-                task &&
-                task.repositoryId === repository.id &&
-                (await tasks.cancel(task.id, "workbench batch canceled"))
+                taskId &&
+                (await tasks.cancel(taskId, "workbench batch canceled"))
               )
                 summary.canceled += 1;
             }
