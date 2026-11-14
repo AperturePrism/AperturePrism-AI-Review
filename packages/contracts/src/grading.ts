@@ -38,8 +38,10 @@ const substantiveEvidenceKinds: readonly string[] = [
 ];
 
 function hasSubstantiveEvidence(result: IssueAnalysisResult): boolean {
-  return result.evidence.some((item) =>
-    substantiveEvidenceKinds.includes(item.kind),
+  return result.evidence.some(
+    (item) =>
+      substantiveEvidenceKinds.includes(item.kind) &&
+      item.excerpt.trim().length > 0,
   );
 }
 
@@ -125,7 +127,9 @@ export function applyGradingRules(
       to: "path-only",
       reason: "未读取源码，无法确认具体位置，已移除行号/符号定位",
     });
-    proposedChanges = proposedChanges.map(({ locator: _drop, ...rest }) => rest);
+    proposedChanges = proposedChanges.map(
+      ({ locator: _drop, ...rest }) => rest,
+    );
   }
 
   const { probableCause: _originalCause, ...rest } = result;
@@ -190,7 +194,10 @@ export function parseIssueAnalysisJson(
   options: GradingOptions = {},
 ): ContractValidation {
   try {
-    return validateIssueAnalysis(JSON.parse(extractIssueAnalysisJson(text)), options);
+    return validateIssueAnalysis(
+      JSON.parse(extractIssueAnalysisJson(text)),
+      options,
+    );
   } catch {
     return {
       outcome: "invalid",
