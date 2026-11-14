@@ -54,6 +54,13 @@ export function useSse(url: string): SseState {
   );
 
   useEffect(() => {
+    // A different URL (including credentials) owns an independent stream.
+    expectedRef.current = 0;
+    lastSeenAtRef.current = null;
+    seenKeysRef.current.clear();
+    setLastSeq(0);
+    setEvents([]);
+    setHasGap(false);
     let disposed = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let es: EventSource | null = null;
@@ -65,14 +72,17 @@ export function useSse(url: string): SseState {
       const target = since
         ? `${url}${url.includes("?") ? "&" : "?"}since=${encodeURIComponent(since)}`
         : url;
-      es = new EventSource(target);
-      es.onopen = () => {
-        if (!disposed) setStatus("online");
+      const source = new EventSource(target);
+      es = source;
+      const isCurrent = () => !disposed && es === source;
+      source.onopen = () => {
+        if (isCurrent()) setStatus("online");
       };
-      es.onerror = () => {
-        if (disposed) return;
+      source.onerror = () => {
+        if (!isCurrent()) return;
         setStatus("offline");
-        es?.close();
+        source.close();
+        es = null;
         retryTimer = setTimeout(connect, 3_000);
       };
       // The server sends named events: `event: heartbeat` and `event: task`
@@ -80,6 +90,7 @@ export function useSse(url: string): SseState {
       // fire `onmessage`, so task events must be subscribed explicitly —
       // otherwise the live stream silently drops every task event.
       const ingestFrame = (data: unknown, seq: number) => {
+        if (!isCurrent()) return;
         const isTaskFrame =
           data &&
           typeof data === "object" &&
@@ -103,20 +114,21 @@ export function useSse(url: string): SseState {
           pushEvent("message", seq, data);
         }
       };
-      es.addEventListener("heartbeat", (raw) => {
+      source.addEventListener("heartbeat", (raw) => {
+        if (!isCurrent()) return;
         const message = raw as MessageEvent<string>;
         // 心跳只推进序号游标（服务端心跳与任务共享同一递增序号），不写入事件缓冲。
         pushEvent("heartbeat", seqOf(message), safeParse(message.data), {
           buffer: false,
         });
       });
-      es.addEventListener("task", (raw) => {
+      source.addEventListener("task", (raw) => {
         const message = raw as MessageEvent<string>;
         ingestFrame(safeParse(message.data), seqOf(message));
       });
       // 兜底：协议保证帧都带 event（task / heartbeat），此路径仅为防御；
       // 若收到 task 形态的默认帧，走与命名 task 事件相同的去重/游标逻辑。
-      es.onmessage = (raw) => {
+      source.onmessage = (raw) => {
         const message = raw as MessageEvent<string>;
         ingestFrame(safeParse(message.data), seqOf(message));
       };
