@@ -130,7 +130,8 @@ jobs:
           name: ${{ github.ref_name }}
           body_path: /tmp/release-body.md
           draft: false
-          prerelease: false
+          # 带预发布后缀（如 v1.3.0-beta）的 tag 只作灰度测试，不占用 Latest。
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       # 闭环：release 由 GITHUB_TOKEN 创建时，release.published 事件会被 GitHub
       # 静默吞掉（GITHUB_TOKEN 触发的事件不会新建 workflow run，workflow_dispatch 除外）。
