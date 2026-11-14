@@ -50,6 +50,7 @@ export function parseBotCommand(text: string): BotCommand | null {
   if (!sawContent || line.length === 0) return null;
   const [rawName, ...rest] = line.split(/\s+/);
   const name = rawName?.replace(/^\/+/, "").toLowerCase() ?? "";
+  if (!Object.hasOwn(KNOWN, name)) return null;
   const kind = KNOWN[name];
   if (!kind) return null;
   const raw = rest.join(" ").trim();
