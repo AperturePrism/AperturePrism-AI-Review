@@ -199,6 +199,7 @@ export async function judgeDuplicates(
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     retryPolicy: options.retryPolicy,
     stickyCandidate: main.candidate,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 
   const repaired = validateReferences(
