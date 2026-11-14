@@ -104,11 +104,7 @@ type ChatCompletionResponse = {
       content?: unknown;
       /** reasoning 模型（deepseek-v4-pro 等）可能只回 reasoning_content 而 content 为空。 */
       reasoning_content?: unknown;
-      tool_calls?: {
-        id?: unknown;
-        type?: unknown;
-        function?: { name?: unknown; arguments?: unknown };
-      }[];
+      tool_calls?: unknown;
     };
   }[];
   usage?: {
@@ -368,32 +364,66 @@ export function createOpenAICompatibleAdapter(
       }
 
       if (
-        !parsed ||
         typeof parsed !== "object" ||
-        !Array.isArray(parsed.choices)
+        parsed === null ||
+        Array.isArray(parsed)
       )
+        throw new ModelInvocationError(
+          "invalid_output",
+          "provider response was not a completion object",
+        );
+      if (!Array.isArray(parsed.choices))
         throw new ModelInvocationError(
           "invalid_output",
           "provider response did not contain a choices array",
         );
+      const message = parsed.choices[0]?.message;
 
-      const message = parsed.choices?.[0]?.message;
-
-      const toolCalls = Array.isArray(message?.tool_calls)
-        ? message.tool_calls
-            .filter((call) => call !== null && typeof call === "object")
-            .map((call) => ({
-              id: typeof call.id === "string" ? call.id : "",
-              name:
-                typeof call.function?.name === "string"
-                  ? call.function.name
-                  : "",
-              arguments:
-                typeof call.function?.arguments === "string"
-                  ? call.function.arguments
-                  : "{}",
-            }))
-            .filter((call) => call.name !== "")
+      const rawCalls = message?.tool_calls;
+      if (
+        rawCalls !== undefined &&
+        rawCalls !== null &&
+        !Array.isArray(rawCalls)
+      )
+        throw new ModelInvocationError(
+          "invalid_output",
+          "provider tool calls were not an array",
+        );
+      const toolCalls = Array.isArray(rawCalls)
+        ? rawCalls.map((call: unknown) => {
+            const invalid = () =>
+              new ModelInvocationError(
+                "invalid_output",
+                "provider returned a malformed tool call",
+              );
+            if (typeof call !== "object" || call === null) throw invalid();
+            const entry = call as { id?: unknown; function?: unknown };
+            if (
+              typeof entry.id !== "string" ||
+              entry.id.trim().length === 0 ||
+              typeof entry.function !== "object" ||
+              entry.function === null
+            )
+              throw invalid();
+            const fn = entry.function as {
+              name?: unknown;
+              arguments?: unknown;
+            };
+            if (
+              typeof fn.name !== "string" ||
+              fn.name.trim().length === 0 ||
+              (fn.arguments !== undefined &&
+                fn.arguments !== null &&
+                typeof fn.arguments !== "string")
+            )
+              throw invalid();
+            // 无参函数调用允许省略 arguments，按空对象补齐。
+            return {
+              id: entry.id,
+              name: fn.name,
+              arguments: typeof fn.arguments === "string" ? fn.arguments : "{}",
+            };
+          })
         : undefined;
 
       // content 可能是字符串、null（纯工具调用）或数组（OpenAI 多模态分段）。
