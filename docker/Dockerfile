@@ -78,6 +78,8 @@ WORKDIR /app/apps/web
 COPY apps/web/package.json apps/web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 # 保留工作区相对路径，网页只引用共享数据契约，生产包不引入 Node 主体。
+# 共享包的 tsconfig 通过 extends 引用根配置，vite 转译时会真实读取，必须一并复制。
+COPY tsconfig.package.json /app/tsconfig.package.json
 COPY packages /app/packages
 COPY apps/web ./
 RUN npm run build
