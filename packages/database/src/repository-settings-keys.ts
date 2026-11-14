@@ -22,6 +22,10 @@ export const REPOSITORY_SETTING_KEYS = [
   "issue_reanalyze_min_change",
   "spam_handling",
   "repo_rules_enabled",
+  "repo_rules_url",
+  "pr_auto_merge_enabled",
+  "pr_auto_merge_method",
+  "pr_auto_merge_required_checks",
 ] as const;
 
 export type RepositorySettingKey = (typeof REPOSITORY_SETTING_KEYS)[number];

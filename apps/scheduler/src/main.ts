@@ -1,9 +1,10 @@
 /**
- * 调度入口：登记四个明确的维护动作，再等待停止信号。
+ * 调度入口：登记明确的维护动作，再等待停止信号。
  * 各动作的并发、防重叠和运行快照由 maintenance.ts 统一保管。
  * 运行：node apps/scheduler/dist/apps/scheduler/src/main.js
  */
-import { hostname } from "node:os";
+import { hostname, homedir } from "node:os";
+import { join } from "node:path";
 import {
   createCredentialCipher,
   loadConfig,
@@ -27,10 +28,14 @@ import {
   waitForMaintenance,
 } from "./maintenance.js";
 import { loadTaskRuntimePolicy } from "../../../packages/task-engine/src/runtime-policy.js";
+import { createWorkbench } from "../../../packages/review-workbench/src/index.js";
+import { reconcilePullRequestAutoMerges } from "./auto-merge.js";
 
 const config = loadConfig(process.env);
 const logger = createLogger(config.logLevel);
 const database = createDatabaseClient(config.databaseUrl);
+// 独立写前日志连接，主事务持行锁时也能提交恢复标记；不依赖主池至少两个连接。
+const mergeJournal = createDatabaseClient(config.databaseUrl);
 const workerId = `${hostname()}:${process.pid}`;
 const shutdown = new AbortController();
 const githubProvider = createGithubAppProvider({
@@ -56,6 +61,12 @@ const githubProvider = createGithubAppProvider({
 });
 // 启动时校验可选队列与重试配置，拼错字段不等到领取时才暴露。
 loadTaskRuntimePolicy();
+const reviewWorkbench = createWorkbench({
+  dataDirectory:
+    process.env.WORKBENCH_DATA_DIRECTORY ??
+    process.env.APERTURE_WORKBENCH_DATA_DIR ??
+    join(homedir(), ".apertureprism", "workbench"),
+});
 
 const maintenance = createMaintenance({
   jobs: [
@@ -83,6 +94,44 @@ const maintenance = createMaintenance({
             logger.warn(
               { err: error, publicationId },
               "Check Run completion pending; will retry",
+            ),
+        });
+      },
+    },
+    {
+      name: "pull-request-auto-merge",
+      intervalMs: 10_000,
+      run: async (signal) => {
+        const github = await githubProvider.get();
+        if (!github || signal.aborted) return 0;
+        return reconcilePullRequestAutoMerges({
+          db: database.db,
+          journalDb: mergeJournal.db,
+          github,
+          signal,
+          workbenchGate: async (repository, requestSignal) => {
+            requestSignal.throwIfAborted();
+            const gate = await reviewWorkbench.execute(
+              {
+                userId: "scheduler:auto-merge",
+                isAdmin: false,
+                canAccessRepository: (candidate) =>
+                  candidate.toLowerCase() === repository.toLowerCase(),
+              },
+              { action: "gate.evaluate", input: { repository } },
+            );
+            requestSignal.throwIfAborted();
+            return {
+              decision:
+                typeof gate === "object" && gate !== null && "decision" in gate
+                  ? String(gate.decision)
+                  : "fail",
+            };
+          },
+          onError: (error, requestId) =>
+            logger.warn(
+              { err: error, requestId },
+              "auto merge deferred; checks remain enforced",
             ),
         });
       },
@@ -126,6 +175,7 @@ async function loop(): Promise<void> {
   } finally {
     await maintenance.stop(); // 等待正在运行的维护结束，再关闭共用数据库连接。
     await database.close();
+    await mergeJournal.close();
   }
   logger.info({ workerId }, "scheduler stopped");
 }

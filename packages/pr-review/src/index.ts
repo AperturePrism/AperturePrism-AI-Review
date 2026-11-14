@@ -27,3 +27,4 @@ export * from "./dependencies.js";
 export * from "./intelligence.js";
 export * from "./checks.js";
 export * from "./suggestions.js";
+export * from "./auto-merge.js";

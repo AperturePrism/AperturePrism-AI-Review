@@ -139,8 +139,10 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
+      WORKBENCH_DATA_DIRECTORY: /var/lib/apertureprism/workbench
     volumes:
       - ${GITHUB_APP_KEY_MOUNT:-/opt/apertureprism/github-app.pem}:/opt/apertureprism/github-app.pem:ro
+      - apertureprism-workbench:/var/lib/apertureprism/workbench
     depends_on:
       postgres:
         condition: service_healthy

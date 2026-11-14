@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export * from "./credentials.js";
 export * from "./settings-registry.js";
+export * from "./auto-merge.js";
 
 export function isProtocolConfig(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;

@@ -1,3 +1,8 @@
+import {
+  MAX_AUTO_MERGE_CHECKS_TEXT,
+  parseRequiredAutoMergeChecks,
+} from "./auto-merge.js";
+
 /**
  * 设置注册表：所有可配置运行时设置的唯一事实源。
  *
@@ -411,6 +416,42 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
   },
   // ── PR 审查 ──
   {
+    key: "pr_auto_merge_enabled",
+    group: "pr",
+    kind: "boolean",
+    secret: false,
+    repoScoped: true,
+    envVar: null,
+    hotReload: "poll",
+    label: "检查通过后自动合并",
+    hint: "默认关闭；需在仓库设置显式启用。审查门禁与所有 GitHub 检查通过、PR 版本一致且满足分支保护时执行，不使用全局值启用。",
+  },
+  {
+    key: "pr_auto_merge_method",
+    group: "pr",
+    kind: "enum",
+    secret: false,
+    repoScoped: true,
+    envVar: null,
+    hotReload: "poll",
+    label: "自动合并方式",
+    hint: "在仓库自动合并设置中选择 squash、merge 或 rebase；默认 squash，仍须仓库允许该方式。",
+    options: ["squash", "merge", "rebase"],
+  },
+  {
+    key: "pr_auto_merge_required_checks",
+    group: "pr",
+    kind: "string",
+    secret: false,
+    repoScoped: true,
+    envVar: null,
+    hotReload: "poll",
+    label: "自动合并必需检查",
+    hint: "准确的检查名称，最多 100 项、每项 200 字；支持 JSON 数组或逗号/换行列表。缺失必需检查会等待，空列表仍要求全部上报检查通过。",
+    multiline: true,
+    maxLength: MAX_AUTO_MERGE_CHECKS_TEXT,
+  },
+  {
     key: "pr_check_run",
     group: "pr",
     kind: "boolean",
@@ -676,6 +717,7 @@ export const BOOLEAN_DEFAULTS: Readonly<Record<string, boolean>> = {
   repo_rules_enabled: true,
   pr_check_run: true,
   pr_auto_review: true,
+  pr_auto_merge_enabled: false,
   agent_team_enabled: false,
   scan_enabled: true,
   // github_webhook_enabled 的默认是动态的（跟随是否配了 webhook secret），
@@ -770,6 +812,15 @@ export function validateSettingValue(
       return "协议配置不是合法 JSON";
     }
     return null;
+  }
+
+  if (key === "pr_auto_merge_required_checks") {
+    try {
+      parseRequiredAutoMergeChecks(value);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "必需检查配置无效";
+    }
   }
 
   // string / secret：不做格式限制。

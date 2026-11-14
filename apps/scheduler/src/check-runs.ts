@@ -8,6 +8,7 @@ import {
 import type { GitHubClient } from "../../../packages/github-adapter/src/index.js";
 import { parsePrReviewTaskPayload } from "../../../packages/pr-review/src/payload.js";
 import { prReviewContractSchema } from "../../../packages/pr-review/src/types.js";
+import { reviewAllowsAutoMerge } from "../../../packages/pr-review/src/auto-merge.js";
 
 type TerminalStatus = "completed" | "failed" | "canceled";
 type CheckRunClient = Pick<GitHubClient, "getCheckRun" | "updateCheckRun">;
@@ -38,7 +39,12 @@ export function terminalCheckRunOutput(
       summary: `审核未完成（${(errorCategory ?? "unknown").slice(0, 200)}）。修复后可在 WebUI 重新入队。`,
     };
   }
-  const parsed = prReviewContractSchema.safeParse(result);
+  const saved =
+    typeof result === "object" && result !== null && !Array.isArray(result)
+      ? (result as Record<string, unknown>)
+      : null;
+  const { assessment, ...contract } = saved ?? {};
+  const parsed = prReviewContractSchema.safeParse(saved ? contract : result);
   if (!parsed.success) {
     return {
       conclusion: "neutral",
@@ -49,6 +55,29 @@ export function terminalCheckRunOutput(
   }
   const review = parsed.data;
   const findings = review.findings.length;
+  if (
+    findings === 0 &&
+    assessment !== undefined &&
+    !reviewAllowsAutoMerge(result)
+  ) {
+    const gate =
+      typeof assessment === "object" &&
+      assessment !== null &&
+      "gate" in assessment
+        ? assessment.gate
+        : null;
+    const failed =
+      typeof gate === "object" &&
+      gate !== null &&
+      "status" in gate &&
+      gate.status === "failed";
+    return {
+      conclusion: failed ? "failure" : "neutral",
+      title: failed ? "AI 审查门禁未通过" : "AI 审查尚不完整",
+      summary:
+        "审查未明确批准、门禁未通过、覆盖不足或存在被过滤/抑制的发现；不能将其标记为成功。",
+    };
+  }
   return {
     conclusion: findings > 0 ? "failure" : "success",
     title: findings > 0 ? `发现 ${findings} 个问题` : "未发现明显问题",
