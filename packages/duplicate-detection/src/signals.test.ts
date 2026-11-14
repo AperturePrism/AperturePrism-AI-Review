@@ -33,7 +33,7 @@ describe("issue signal extraction", () => {
     expect(signals.versions).toContain("1.2.3");
     expect(signals.errorCodes.some((c) => c === "0X0000A1F")).toBe(true);
     expect(signals.errorCodes.some((c) => c === "HTTP_511")).toBe(true);
-    expect(signals.paths).toContain("@scope");
+    expect(signals.paths).toContain("@scope/util");
     expect(signals.languages).toContain("ts");
     expect(signals.hasStackTrace).toBe(true);
     expect(signals.hasReproduction).toBe(true);
@@ -58,5 +58,36 @@ describe("issue signal extraction", () => {
     const overlap = computeSignalOverlap(lead, same);
     expect(overlap.strongShared).toBeGreaterThanOrEqual(2);
     expect(computeSignalOverlap(lead, different).strongShared).toBe(0);
+  });
+});
+
+describe("scoped package signals", () => {
+  function signals(module: string) {
+    return extractIssueSignals({
+      title: "crash",
+      body: `import value from "${module}";`,
+      labels: [],
+    });
+  }
+
+  it("keeps scope and package name as one module identity", () => {
+    expect(signals("@scope/util/subpath").paths).toEqual(["@scope/util"]);
+    expect(signals("lodash/fp").paths).toEqual(["lodash"]);
+  });
+
+  it("does not treat unrelated packages in the same scope as shared evidence", () => {
+    const overlap = computeSignalOverlap(
+      signals("@scope/http"),
+      signals("@scope/storage"),
+    );
+    expect(overlap.sharedPaths).toBe(0);
+    expect(overlap.strongShared).toBe(0);
+  });
+
+  it("recognizes different subpaths of the same scoped package", () => {
+    expect(
+      computeSignalOverlap(signals("@scope/util/a"), signals("@scope/util/b"))
+        .sharedPaths,
+    ).toBe(1);
   });
 });
