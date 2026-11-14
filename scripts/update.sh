@@ -151,6 +151,9 @@ fi
 log info "up ok"
 
 stage health "等待服务健康检查"
+# 此时 api 容器尚未重启，/health/ready 探测的是旧进程，只能用于回滚非 api
+# 服务；它不能作为目标版本已运行的证据。版本确认只依赖新 api 镜像内的
+# package.json（见 apps/api/src/update.ts 的 packageVersion）。
 attempt=0
 healthy=0
 while [ "$attempt" -lt 12 ]; do

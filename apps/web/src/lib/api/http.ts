@@ -65,15 +65,10 @@ export async function getJson(url: string): Promise<unknown> {
   return request;
 }
 
-/** Uncached JSON read; optional cache policy and cancellation preserve authentication. */
-export async function fetchJson(
-  url: string,
-  options: Pick<RequestInit, "cache" | "signal"> = {},
-): Promise<unknown> {
+async function fetchJson(url: string): Promise<unknown> {
   const response = await fetch(url, {
     credentials: "same-origin",
     headers: { accept: "application/json", ...authHeaders() },
-    ...options,
   });
   if (response.status === 401) {
     // 令牌失效：通知应用回到登录页（密码门禁）。仅顶层一次，避免重复触发。

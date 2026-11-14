@@ -167,6 +167,13 @@
       "when": 1794528000000,
       "tag": "0023_check_run_completion",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794582000000,
+      "tag": "0024_pull_request_auto_merge",
+      "breakpoints": true
     }
   ]
 }

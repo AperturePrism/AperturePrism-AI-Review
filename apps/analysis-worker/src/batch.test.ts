@@ -16,7 +16,7 @@ import type {
 import {
   createWorkbenchBatchDispatcher,
   parseBatchSubject,
-  workbenchBatchTaskKey,
+  workbenchTaskDedupeKey,
   type BatchAnalysisTask,
   type BatchTaskStore,
   type WorkbenchBatchDispatcher,
@@ -80,14 +80,23 @@ describe("batch subject boundaries", () => {
   ])("rejects subject %s reference %s", (subject, reference) => {
     expect(() => parseBatchSubject("owner/repo", subject, reference)).toThrow();
   });
-  it("keeps one task identity across coordination retries but changes explicit run generations", () => {
-    const batch = { id: "batch" };
-    expect(workbenchBatchTaskKey(batch, { id: "item" })).toBe(
-      workbenchBatchTaskKey(batch, { id: "item", generation: 0 }),
+  it("uses one cross-batch task identity per repository, subject, revision and policy", () => {
+    const base = {
+      repositoryId: "repository-id",
+      taskType: "pr_review" as const,
+      number: 7,
+      revision: sha,
+      policyVersion: "policy-v1",
+    };
+    expect(workbenchTaskDedupeKey(base)).toBe(
+      workbenchTaskDedupeKey({ ...base }),
     );
-    expect(
-      workbenchBatchTaskKey(batch, { id: "item", generation: 1 }),
-    ).not.toBe(workbenchBatchTaskKey(batch, { id: "item" }));
+    expect(workbenchTaskDedupeKey(base)).not.toBe(
+      workbenchTaskDedupeKey({ ...base, revision: "b".repeat(40) }),
+    );
+    expect(workbenchTaskDedupeKey(base)).not.toBe(
+      workbenchTaskDedupeKey({ ...base, number: 8 }),
+    );
   });
 });
 
@@ -345,7 +354,8 @@ describe("batch dispatcher with durable workbench records", () => {
     const replacement = dispatcher({ workerId: "dispatcher-2" });
     await replacement.tick();
     expect(creates).toBe(1);
-    expect(getPullRequest).toHaveBeenCalledOnce();
+    // 跨批次去重键需要版本，恢复时会重新读取一次 GitHub，但不会重复建任务。
+    expect(getPullRequest).toHaveBeenCalledTimes(2);
     const current = await read(batch);
     expect(current.items[0]).toMatchObject({
       attempts: 2,
@@ -371,7 +381,7 @@ describe("batch dispatcher with durable workbench records", () => {
     });
   });
 
-  it("creates a new generation only after an explicit user retry of exhausted work", async () => {
+  it("retries the single cross-batch task instead of creating a new generation", async () => {
     const batch = await call<Batch>("batches.create", {
       name: "one attempt",
       concurrency: 1,
@@ -387,8 +397,11 @@ describe("batch dispatcher with durable workbench records", () => {
     expect((await read(batch)).items[0]?.status).toBe("failed");
     await call("batches.retry", { id: batch.id });
     await worker.tick();
-    expect(creates).toBe(2);
-    expect([...tasks.keys()]).toHaveLength(2);
+    // 同一 repo + PR + head + policy 只允许一个任务，显式重试复用并重置该任务。
+    expect(creates).toBe(1);
+    expect(retries).toBe(1);
+    expect([...tasks.values()]).toHaveLength(1);
+    expect((await read(batch)).items[0]?.status).not.toBe("failed");
   });
 
   it("stops new dispatch on pause but continues synchronizing already running tasks", async () => {

@@ -213,6 +213,17 @@ export const workbench = {
     repository: string,
     input: Record<string, unknown>,
   ) => write<WorkbenchRecords[K]>(`/${collection}`, repository, input),
+  get: <K extends WorkbenchCollection>(
+    collection: K,
+    id: string,
+    repository: string,
+    signal?: AbortSignal,
+  ) =>
+    read<WorkbenchRecords[K]>(
+      `/${collection}/${encodeURIComponent(id)}`,
+      repository,
+      signal,
+    ),
   action: <T = unknown>(
     collection: WorkbenchCollection,
     id: string,

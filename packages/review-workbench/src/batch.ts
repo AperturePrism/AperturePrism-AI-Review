@@ -63,6 +63,19 @@ export function createBatch(
   context: CommandContext,
   input: Record<string, unknown>,
 ): Batch {
+  const idempotencyKey = optionalText(
+    input.idempotencyKey,
+    "idempotencyKey",
+    200,
+  );
+  if (idempotencyKey) {
+    const existing = context.data.batches.find(
+      (batch) =>
+        batch.repository === context.repository &&
+        batch.idempotencyKey === idempotencyKey,
+    );
+    if (existing) return existing;
+  }
   const raw = array(input.items, "items", 1000);
   if (!raw.length)
     throw new WorkbenchError("empty_batch", "批次至少需要一个审查项");
@@ -96,6 +109,7 @@ export function createBatch(
     concurrency: integer(input.concurrency, "concurrency", 1, 100, 2),
     items,
     note: optionalText(input.note, "note", 3000),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
   };
   context.data.batches.push(batch);
   audit(context, "batch.created", batch.id, {

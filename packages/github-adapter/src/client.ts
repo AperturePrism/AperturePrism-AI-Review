@@ -43,6 +43,36 @@ export type GitHubPullRequest = {
   deletions: number;
 };
 
+/** 自动合并专用快照；不改变既有审查读取契约。 */
+export type GitHubPullRequestMergeState = {
+  number: number;
+  state: "open" | "closed";
+  headSha: string;
+  draft: boolean;
+  merged: boolean;
+  mergeCommitSha: string | null;
+  mergeable: boolean | null;
+  mergeableState: string;
+  baseRef: string;
+};
+
+export type GitHubCommitCheck = {
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: string | null;
+  source: "check_run" | "status";
+};
+
+export type GitHubPullRequestReviewState = {
+  user: string;
+  state: string;
+  submittedAt: string;
+  commitId: string;
+  userType: string | null;
+};
+
+export type GitHubMergeMethod = "merge" | "squash" | "rebase";
+
 /** A repository installed to the GitHub App, from `GET /installation/repositories`. */
 export type InstalledRepository = {
   id: number;
@@ -124,9 +154,7 @@ export type GitHubClient = {
    */
   pingAppWebhook: (signal?: AbortSignal) => Promise<void>;
   /** Webhook 最近投递概要（GET /app/hook/deliveries，App JWT 认证），新→旧。 */
-  listRecentWebhookDeliveries: (
-    signal?: AbortSignal,
-  ) => Promise<
+  listRecentWebhookDeliveries: (signal?: AbortSignal) => Promise<
     readonly {
       id: string;
       event: string;
@@ -191,6 +219,46 @@ export type GitHubClient = {
     },
     signal?: AbortSignal,
   ) => Promise<GitHubPullRequest>;
+  getPullRequestMergeState: (
+    input: {
+      installationId: string;
+      owner: string;
+      name: string;
+      pullNumber: number;
+    },
+    signal?: AbortSignal,
+  ) => Promise<GitHubPullRequestMergeState>;
+  /** 读取所有页；只保留每个 legacy context 最新状态，读取不完整时拒绝返回。 */
+  getCommitChecks: (
+    input: {
+      installationId: string;
+      owner: string;
+      name: string;
+      ref: string;
+    },
+    signal?: AbortSignal,
+  ) => Promise<{ checks: readonly GitHubCommitCheck[] }>;
+  listPullRequestReviewStates: (
+    input: {
+      installationId: string;
+      owner: string;
+      name: string;
+      pullNumber: number;
+    },
+    signal?: AbortSignal,
+  ) => Promise<readonly GitHubPullRequestReviewState[]>;
+  /** 必传已审查 head 的 SHA；GitHub 在写入时再次比较版本。 */
+  mergePullRequest: (
+    input: {
+      installationId: string;
+      owner: string;
+      name: string;
+      pullNumber: number;
+      expectedHeadSha: string;
+      method: GitHubMergeMethod;
+    },
+    signal?: AbortSignal,
+  ) => Promise<{ merged: boolean; sha: string | null; message: string }>;
   /** Lists pull requests (PRs only, unlike `/issues`), newest first, paged. */
   listPullRequests: (
     input: {
@@ -268,27 +336,33 @@ export type GitHubClient = {
    * Used to seed an example rules file on a repo's first analysis and to edit rules from the WebUI.
    * Returns false if the file already exists (create mode) or the blob sha mismatched.
    */
-  writeFileContents: (input: {
-    installationId: string;
-    owner: string;
-    name: string;
-    path: string;
-    ref: string;
-    content: string;
-    sha?: string;
-  }, signal?: AbortSignal) => Promise<boolean>;
+  writeFileContents: (
+    input: {
+      installationId: string;
+      owner: string;
+      name: string;
+      path: string;
+      ref: string;
+      content: string;
+      sha?: string;
+    },
+    signal?: AbortSignal,
+  ) => Promise<boolean>;
   /**
    * Deletes a file via the contents API (DELETE /repos/{owner}/{name}/contents/{path}).
    * Requires the current blob sha. Returns false when the file does not exist.
    */
-  deleteFileContents: (input: {
-    installationId: string;
-    owner: string;
-    name: string;
-    path: string;
-    ref: string;
-    sha: string;
-  }, signal?: AbortSignal) => Promise<boolean>;
+  deleteFileContents: (
+    input: {
+      installationId: string;
+      owner: string;
+      name: string;
+      path: string;
+      ref: string;
+      sha: string;
+    },
+    signal?: AbortSignal,
+  ) => Promise<boolean>;
   listIssueComments: (
     input: {
       installationId: string;
@@ -521,8 +595,17 @@ function retryAfterMs(headers: Headers): number | undefined {
 function categorizeStatus(
   status: number,
   retryAfter: number | undefined,
+  rateLimitRemaining: string | null,
 ): GitHubApiError {
   if (status === 429)
+    return new GitHubApiError(
+      "rate_limited",
+      `GitHub responded with ${status}`,
+      status,
+      retryAfter,
+    );
+  // GitHub 二级限流通常返回 403 并带 Retry-After 或耗尽额度；与权限失败区分。
+  if (status === 403 && (retryAfter !== undefined || rateLimitRemaining === "0"))
     return new GitHubApiError(
       "rate_limited",
       `GitHub responded with ${status}`,
@@ -596,7 +679,11 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
     }
 
     if (!response.ok) {
-      throw categorizeStatus(response.status, retryAfterMs(response.headers));
+      throw categorizeStatus(
+        response.status,
+        retryAfterMs(response.headers),
+        response.headers.get("x-ratelimit-remaining"),
+      );
     }
     if (init.rawText) return (await response.text()) as T;
     if (response.status === 204) return null as T;
@@ -698,14 +785,15 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
     getAppMetadata: async (signal) => {
       // 用 App JWT（而非 installation token）直调 /app：这是验证 appId 与私钥
       // 是否匹配的最轻量方式，不需要任何仓库或安装。
-      const app = await request<{ id?: unknown; slug?: unknown; name?: unknown }>(
-        "/app",
-        {
-          method: "GET",
-          token: signAppJwt(options.appId, options.privateKeyPem, now()),
-          ...(signal ? { signal } : {}),
-        },
-      );
+      const app = await request<{
+        id?: unknown;
+        slug?: unknown;
+        name?: unknown;
+      }>("/app", {
+        method: "GET",
+        token: signAppJwt(options.appId, options.privateKeyPem, now()),
+        ...(signal ? { signal } : {}),
+      });
       return {
         id: typeof app.id === "number" ? app.id : 0,
         slug: typeof app.slug === "string" ? app.slug : "",
@@ -754,9 +842,13 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
         ...(signal ? { signal } : {}),
       });
       return deliveries.map((entry) => ({
-        id: typeof entry.id === "string" || typeof entry.id === "number" ? String(entry.id) : "",
+        id:
+          typeof entry.id === "string" || typeof entry.id === "number"
+            ? String(entry.id)
+            : "",
         event: typeof entry.event === "string" ? entry.event : "unknown",
-        statusCode: typeof entry.status_code === "number" ? entry.status_code : null,
+        statusCode:
+          typeof entry.status_code === "number" ? entry.status_code : null,
         deliveredAt:
           typeof entry.delivered_at === "string" ? entry.delivered_at : "",
       }));
@@ -786,10 +878,13 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
         );
         return {
           defaultBranch:
-            typeof repo.default_branch === "string" ? repo.default_branch : "main",
+            typeof repo.default_branch === "string"
+              ? repo.default_branch
+              : "main",
         };
       } catch (error) {
-        if (error instanceof GitHubApiError && error.status === 404) return null;
+        if (error instanceof GitHubApiError && error.status === 404)
+          return null;
         throw error;
       }
     },
@@ -847,6 +942,251 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
       return mapPullRequest(pullRequest);
     },
 
+    getPullRequestMergeState: async (
+      { installationId, owner, name, pullNumber },
+      signal,
+    ) => {
+      const value = mergeObject(
+        await authorized<unknown>(
+          installationId,
+          {
+            method: "GET",
+            path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${pullNumber}`,
+          },
+          signal,
+        ),
+      );
+      const head = mergeObject(value.head);
+      const base = mergeObject(value.base);
+      if (
+        value.number !== pullNumber ||
+        (value.state !== "open" && value.state !== "closed") ||
+        typeof value.draft !== "boolean" ||
+        typeof value.merged !== "boolean" ||
+        (value.mergeable !== null && typeof value.mergeable !== "boolean") ||
+        (value.merge_commit_sha !== null &&
+          typeof value.merge_commit_sha !== "string")
+      )
+        throw mergeResponseError("pull request merge state is incomplete");
+      return {
+        number: pullNumber,
+        state: value.state,
+        headSha: mergeString(head.sha),
+        draft: value.draft,
+        merged: value.merged,
+        mergeCommitSha:
+          value.merge_commit_sha === null
+            ? null
+            : mergeString(value.merge_commit_sha),
+        mergeable: value.mergeable,
+        mergeableState: mergeString(value.mergeable_state),
+        baseRef: mergeString(base.ref),
+      };
+    },
+
+    getCommitChecks: async ({ installationId, owner, name, ref }, signal) => {
+      const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(ref)}`;
+      const checks: GitHubCommitCheck[] = [];
+      const seenRuns = new Set<number>();
+      let totalCount: number | undefined;
+      for (let page = 1; ; page += 1) {
+        if (page > mergeMaximumPages)
+          throw mergeResponseError("check run pagination exceeded its bound");
+        const value = mergeObject(
+          await authorized<unknown>(
+            installationId,
+            {
+              method: "GET",
+              path: `${path}/check-runs?filter=latest&per_page=100&page=${page}`,
+            },
+            signal,
+          ),
+        );
+        if (
+          !Number.isSafeInteger(value.total_count) ||
+          (value.total_count as number) < 0 ||
+          (value.total_count as number) > mergeMaximumPages * 100 ||
+          (totalCount !== undefined && totalCount !== value.total_count)
+        )
+          throw mergeResponseError("check run count changed or was invalid");
+        totalCount = value.total_count as number;
+        const rows = mergePage(value.check_runs);
+        for (const entry of rows) {
+          const row = mergeObject(entry);
+          const id = mergeId(row.id);
+          if (seenRuns.has(id))
+            throw mergeResponseError("check run pagination repeated an item");
+          seenRuns.add(id);
+          const status = mergeString(row.status);
+          if (!mergeCheckStatuses.has(status))
+            throw mergeResponseError("check run status was unknown");
+          const conclusion =
+            row.conclusion === null ? null : mergeString(row.conclusion);
+          if (conclusion !== null && !mergeCheckConclusions.has(conclusion))
+            throw mergeResponseError("check run conclusion was unknown");
+          if (
+            /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(ref) &&
+            row.head_sha !== ref
+          )
+            throw mergeResponseError("check run belongs to a different commit");
+          checks.push({
+            name: mergeString(row.name),
+            status:
+              status === "completed"
+                ? "completed"
+                : status === "in_progress"
+                  ? "in_progress"
+                  : "queued",
+            conclusion,
+            source: "check_run",
+          });
+        }
+        if (seenRuns.size > totalCount)
+          throw mergeResponseError("check run count was inconsistent");
+        if (rows.length < 100) {
+          if (seenRuns.size !== totalCount)
+            throw mergeResponseError("check run pagination was incomplete");
+          break;
+        }
+        if (seenRuns.size === totalCount) break;
+      }
+      const contexts = new Set<string>();
+      const seenStatuses = new Set<number>();
+      for (let page = 1; ; page += 1) {
+        if (page > mergeMaximumPages)
+          throw mergeResponseError(
+            "commit status pagination exceeded its bound",
+          );
+        const rows = mergePage(
+          await authorized<unknown>(
+            installationId,
+            {
+              method: "GET",
+              path: `${path}/statuses?per_page=100&page=${page}`,
+            },
+            signal,
+          ),
+        );
+        for (const entry of rows) {
+          const row = mergeObject(entry);
+          const id = mergeId(row.id);
+          if (seenStatuses.has(id))
+            throw mergeResponseError(
+              "commit status pagination repeated an item",
+            );
+          seenStatuses.add(id);
+          const context = mergeString(row.context);
+          const state = mergeString(row.state);
+          if (!mergeLegacyStates.has(state))
+            throw mergeResponseError("commit status state was unknown");
+          // GitHub returns newest first. Older success cannot overwrite a new failure.
+          if (contexts.has(context)) continue;
+          contexts.add(context);
+          checks.push({
+            name: context,
+            status: state === "pending" ? "queued" : "completed",
+            conclusion:
+              state === "success"
+                ? "success"
+                : state === "pending"
+                  ? null
+                  : "failure",
+            source: "status",
+          });
+        }
+        if (rows.length < 100) break;
+      }
+      return { checks };
+    },
+
+    listPullRequestReviewStates: async (
+      { installationId, owner, name, pullNumber },
+      signal,
+    ) => {
+      const reviews: GitHubPullRequestReviewState[] = [];
+      const seen = new Set<number>();
+      for (let page = 1; ; page += 1) {
+        if (page > mergeMaximumPages)
+          throw mergeResponseError("review pagination exceeded its bound");
+        const rows = mergePage(
+          await authorized<unknown>(
+            installationId,
+            {
+              method: "GET",
+              path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${pullNumber}/reviews?per_page=100&page=${page}`,
+            },
+            signal,
+          ),
+        );
+        for (const entry of rows) {
+          const row = mergeObject(entry);
+          const id = mergeId(row.id);
+          if (seen.has(id))
+            throw mergeResponseError("review pagination repeated an item");
+          seen.add(id);
+          const user = mergeObject(row.user);
+          const state = mergeString(row.state);
+          if (!mergeReviewStates.has(state))
+            throw mergeResponseError("review state was unknown");
+          const submittedAt =
+            row.submitted_at === null && state === "PENDING"
+              ? ""
+              : mergeString(row.submitted_at);
+          if (submittedAt !== "" && !Number.isFinite(Date.parse(submittedAt)))
+            throw mergeResponseError("review submission time was invalid");
+          if (user.type !== null && typeof user.type !== "string")
+            throw mergeResponseError("reviewer type was invalid");
+          reviews.push({
+            user: mergeString(user.login),
+            state,
+            submittedAt,
+            commitId: mergeString(row.commit_id),
+            userType: user.type === null ? null : mergeString(user.type),
+          });
+        }
+        if (rows.length < 100) break;
+      }
+      return reviews;
+    },
+
+    mergePullRequest: async (
+      { installationId, owner, name, pullNumber, expectedHeadSha, method },
+      signal,
+    ) => {
+      if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(expectedHeadSha))
+        throw new GitHubApiError(
+          "invalid_request",
+          "merge requires an exact reviewed head SHA",
+          null,
+        );
+      if (!["merge", "squash", "rebase"].includes(method))
+        throw new GitHubApiError(
+          "invalid_request",
+          "merge method was invalid",
+          null,
+        );
+      const value = mergeObject(
+        await authorized<unknown>(
+          installationId,
+          {
+            method: "PUT",
+            path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${pullNumber}/merge`,
+            body: { sha: expectedHeadSha, merge_method: method },
+          },
+          signal,
+        ),
+      );
+      if (
+        typeof value.merged !== "boolean" ||
+        (value.sha !== null && typeof value.sha !== "string")
+      )
+        throw mergeResponseError("merge result was incomplete");
+      const sha = value.sha === null ? null : mergeString(value.sha);
+      if (value.merged && !sha)
+        throw mergeResponseError("successful merge omitted its commit SHA");
+      return { merged: value.merged, sha, message: mergeString(value.message) };
+    },
+
     listPullRequests: async (
       { installationId, owner, name, state = "open", perPage = 100, page = 1 },
       signal,
@@ -900,7 +1240,8 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
           signal,
         );
       } catch (error) {
-        if (error instanceof GitHubApiError && error.status === 404) return null;
+        if (error instanceof GitHubApiError && error.status === 404)
+          return null;
         throw error;
       }
       // A directory path returns an array instead of a file object.
@@ -916,8 +1257,13 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
       };
     },
 
-    listDirectory: async ({ installationId, owner, name, path, ref }, signal) => {
-      const safePath = String(path || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    listDirectory: async (
+      { installationId, owner, name, path, ref },
+      signal,
+    ) => {
+      const safePath = String(path || "")
+        .replace(/^\/+/, "")
+        .replace(/\/+$/, "");
       const encoded = safePath.split("/").map(encodeURIComponent).join("/");
       let data: unknown;
       try {
@@ -989,7 +1335,11 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
           {
             method: "DELETE",
             path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${encoded}`,
-            body: { message: `chore: remove AperturePrism review rule ${path}`, branch: ref, sha },
+            body: {
+              message: `chore: remove AperturePrism review rule ${path}`,
+              branch: ref,
+              sha,
+            },
           },
           signal,
         );
@@ -1049,7 +1399,10 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
         },
         signal,
       );
-      return { number: numberValue(issue.number), htmlUrl: stringValue(issue.html_url) };
+      return {
+        number: numberValue(issue.number),
+        htmlUrl: stringValue(issue.html_url),
+      };
     },
 
     updateIssue: async (
@@ -1057,11 +1410,15 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
       signal,
     ) => {
       const body: Record<string, unknown> = {};
-      if (title !== undefined && title.trim().length > 0) body.title = title.trim();
+      if (title !== undefined && title.trim().length > 0)
+        body.title = title.trim();
       if (assignees !== undefined && assignees.length > 0)
         body.assignees = [...assignees];
       if (Object.keys(body).length === 0)
-        return { number, htmlUrl: `https://github.com/${owner}/${name}/issues/${number}` };
+        return {
+          number,
+          htmlUrl: `https://github.com/${owner}/${name}/issues/${number}`,
+        };
       const issue = await authorized<Record<string, unknown>>(
         installationId,
         {
@@ -1071,7 +1428,10 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
         },
         signal,
       );
-      return { number: numberValue(issue.number), htmlUrl: stringValue(issue.html_url) };
+      return {
+        number: numberValue(issue.number),
+        htmlUrl: stringValue(issue.html_url),
+      };
     },
 
     closeIssue: async (
@@ -1120,7 +1480,9 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
       { installationId, owner, name, number, labels },
       signal,
     ) => {
-      const unique = [...new Set(labels)].filter((label) => label.trim().length > 0);
+      const unique = [...new Set(labels)].filter(
+        (label) => label.trim().length > 0,
+      );
       if (unique.length === 0) return;
       await authorized<Record<string, unknown>>(
         installationId,
@@ -1150,7 +1512,16 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
     },
 
     createPullRequestReview: async (
-      { installationId, owner, name, pullNumber, commitId, body, event, comments },
+      {
+        installationId,
+        owner,
+        name,
+        pullNumber,
+        commitId,
+        body,
+        event,
+        comments,
+      },
       signal,
     ) => {
       const review = await authorized<Record<string, unknown>>(
@@ -1162,7 +1533,9 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
             commit_id: commitId,
             body,
             event,
-            ...(comments && comments.length > 0 ? { comments: [...comments] } : {}),
+            ...(comments && comments.length > 0
+              ? { comments: [...comments] }
+              : {}),
           },
         },
         signal,
@@ -1204,10 +1577,23 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
     },
 
     createCheckRun: async (
-      { installationId, owner, name, headSha, runName, status, conclusion, title, summary },
+      {
+        installationId,
+        owner,
+        name,
+        headSha,
+        runName,
+        status,
+        conclusion,
+        title,
+        summary,
+      },
       signal,
     ) => {
-      const output = title || summary ? { title: title ?? runName, summary: summary ?? "" } : undefined;
+      const output =
+        title || summary
+          ? { title: title ?? runName, summary: summary ?? "" }
+          : undefined;
       const run = await authorized<Record<string, unknown>>(
         installationId,
         {
@@ -1230,10 +1616,22 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
     },
 
     updateCheckRun: async (
-      { installationId, owner, name, checkRunId, status, conclusion, title, summary },
+      {
+        installationId,
+        owner,
+        name,
+        checkRunId,
+        status,
+        conclusion,
+        title,
+        summary,
+      },
       signal,
     ) => {
-      const output = title || summary ? { title: title ?? `Check ${checkRunId}`, summary: summary ?? "" } : undefined;
+      const output =
+        title || summary
+          ? { title: title ?? `Check ${checkRunId}`, summary: summary ?? "" }
+          : undefined;
       const run = await authorized<Record<string, unknown>>(
         installationId,
         {
@@ -1268,7 +1666,9 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
       const output = (run.output ?? {}) as { title?: unknown };
       return {
         id: numberValue(run.id),
-        status: (["queued", "in_progress", "completed"].includes(String(run.status))
+        status: (["queued", "in_progress", "completed"].includes(
+          String(run.status),
+        )
           ? String(run.status)
           : "queued") as "queued" | "in_progress" | "completed",
         conclusion:
@@ -1351,6 +1751,67 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
       }));
     },
   };
+}
+
+const mergeMaximumPages = 100;
+const mergeCheckStatuses = new Set([
+  "queued",
+  "in_progress",
+  "completed",
+  "waiting",
+  "requested",
+  "pending",
+]);
+const mergeCheckConclusions = new Set([
+  "action_required",
+  "cancelled",
+  "failure",
+  "neutral",
+  "skipped",
+  "stale",
+  "success",
+  "timed_out",
+  "startup_failure",
+]);
+const mergeLegacyStates = new Set(["pending", "success", "failure", "error"]);
+const mergeReviewStates = new Set([
+  "APPROVED",
+  "CHANGES_REQUESTED",
+  "COMMENTED",
+  "DISMISSED",
+  "PENDING",
+]);
+
+function mergeResponseError(message: string): GitHubApiError {
+  return new GitHubApiError(
+    "invalid_request",
+    `GitHub auto-merge response: ${message}`,
+    200,
+  );
+}
+
+function mergeObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw mergeResponseError("expected an object");
+  return value as Record<string, unknown>;
+}
+
+function mergeString(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0)
+    throw mergeResponseError("expected a non-empty string");
+  return value;
+}
+
+function mergeId(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)
+    throw mergeResponseError("item ID was invalid");
+  return value;
+}
+
+function mergePage(value: unknown): unknown[] {
+  if (!Array.isArray(value) || value.length > 100)
+    throw mergeResponseError("page was incomplete or invalid");
+  return value;
 }
 
 function stringValue(value: unknown): string {

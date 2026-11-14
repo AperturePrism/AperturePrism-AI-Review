@@ -30,9 +30,18 @@ const saveProvider = vi.mocked(api.saveProvider);
 
 // 显式等待交互引发的 React 状态更新，兼容独立 Web 工作区的测试依赖。
 const user = {
-  click: (element: Element) => act(async () => { await userEvent.click(element); }),
-  clear: (element: Element) => act(async () => { await userEvent.clear(element); }),
-  type: (element: Element, value: string) => act(async () => { await userEvent.type(element, value); }),
+  click: (element: Element) =>
+    act(async () => {
+      await userEvent.click(element);
+    }),
+  clear: (element: Element) =>
+    act(async () => {
+      await userEvent.clear(element);
+    }),
+  type: (element: Element, value: string) =>
+    act(async () => {
+      await userEvent.type(element, value);
+    }),
 };
 
 function renderPage() {
@@ -79,15 +88,25 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     fetchProviders.mockResolvedValue({
       policies: [],
       accounts: [
-        { provider: "p", name: "p-main", baseUrl: "https://api.example.com/v1" },
-        { provider: "other", name: "other-main", baseUrl: "https://other.example.com/v1" },
+        {
+          provider: "p",
+          name: "p-main",
+          baseUrl: "https://api.example.com/v1",
+        },
+        {
+          provider: "other",
+          name: "other-main",
+          baseUrl: "https://other.example.com/v1",
+        },
       ],
     });
   });
 
   async function openEditor() {
     renderPage();
-    await user.click(await screen.findByRole("button", { name: "编辑 p/p-main" }));
+    await user.click(
+      await screen.findByRole("button", { name: "编辑 p/p-main" }),
+    );
     return within(screen.getByRole("region", { name: "编辑模型" }));
   }
 
@@ -98,7 +117,9 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     expect(savedKey).toHaveAttribute("type", "password");
     expect(savedKey).toHaveAttribute("readonly");
     expect(savedKey).toHaveValue("••••••••••••••••");
-    expect(savedKey).toHaveAccessibleDescription(/已保存 API Key，将保留原密钥.*原密钥不会回传/);
+    expect(savedKey).toHaveAccessibleDescription(
+      /已保存 API Key，将保留原密钥.*原密钥不会回传/,
+    );
     expect(form.queryByRole("button", { name: "显示新密钥" })).toBeNull();
     expect(form.getByRole("button", { name: "替换密钥" })).toBeEnabled();
     expect(fetchModels).not.toHaveBeenCalled();
@@ -121,9 +142,13 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
       model: "updated-model",
       apiKey: "",
     });
-    await waitFor(() => expect(screen.queryByRole("region", { name: "编辑模型" })).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "编辑模型" })).toBeNull(),
+    );
     await user.click(screen.getByRole("button", { name: "编辑 p/p-main" }));
-    expect(screen.getByLabelText("API Key（已保存）")).toHaveValue("••••••••••••••••");
+    expect(screen.getByLabelText("API Key（已保存）")).toHaveValue(
+      "••••••••••••••••",
+    );
   });
 
   it("主动替换后只显示本次输入的新密钥，默认隐藏且可切换显示", async () => {
@@ -137,14 +162,21 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     await user.type(newKey, "sk-new-test-only");
     await user.click(form.getByRole("button", { name: "显示新密钥" }));
     expect(newKey).toHaveAttribute("type", "text");
-    expect(form.getByRole("button", { name: "隐藏新密钥" })).toHaveAttribute("aria-pressed", "true");
+    expect(form.getByRole("button", { name: "隐藏新密钥" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     await user.click(form.getByRole("button", { name: "隐藏新密钥" }));
     expect(newKey).toHaveAttribute("type", "password");
     await user.type(form.getByPlaceholderText(/模型名/), "m");
     await user.click(form.getByRole("button", { name: "保存修改" }));
 
-    expect(saveProvider).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "sk-new-test-only" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "编辑模型" })).toBeNull());
+    expect(saveProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "sk-new-test-only" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "编辑模型" })).toBeNull(),
+    );
     expect(screen.queryByDisplayValue("sk-new-test-only")).toBeNull();
   });
 
@@ -155,22 +187,31 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     await user.click(form.getByRole("button", { name: "显示新密钥" }));
     await user.click(form.getByRole("button", { name: "保留原密钥" }));
 
-    expect(form.getByLabelText("API Key（已保存）")).toHaveValue("••••••••••••••••");
+    expect(form.getByLabelText("API Key（已保存）")).toHaveValue(
+      "••••••••••••••••",
+    );
     expect(form.queryByDisplayValue("sk-discard-test-only")).toBeNull();
     await user.type(form.getByPlaceholderText(/模型名/), "m");
     await user.click(form.getByRole("button", { name: "保存修改" }));
-    expect(saveProvider).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "" }));
+    expect(saveProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "" }),
+    );
   });
 
-  it.each(["", "   "])("替换框留空或仅有空格时仍保留原密钥（%j）", async (blank) => {
-    const form = await openEditor();
-    await user.click(form.getByRole("button", { name: "替换密钥" }));
-    if (blank) await user.type(form.getByLabelText("新 API Key"), blank);
-    await user.type(form.getByPlaceholderText(/模型名/), "m");
-    await user.click(form.getByRole("button", { name: "保存修改" }));
+  it.each(["", "   "])(
+    "替换框留空或仅有空格时仍保留原密钥（%j）",
+    async (blank) => {
+      const form = await openEditor();
+      await user.click(form.getByRole("button", { name: "替换密钥" }));
+      if (blank) await user.type(form.getByLabelText("新 API Key"), blank);
+      await user.type(form.getByPlaceholderText(/模型名/), "m");
+      await user.click(form.getByRole("button", { name: "保存修改" }));
 
-    expect(saveProvider).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "" }));
-  });
+      expect(saveProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: "" }),
+      );
+    },
+  );
 
   it("取消后再次编辑同一账户会恢复原表单并清除新密钥和显示状态", async () => {
     const form = await openEditor();
@@ -184,10 +225,15 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     expect(screen.getAllByRole("button", { name: "添加模型" })).toHaveLength(1);
     expect(screen.queryByDisplayValue("sk-cancel-test-only")).toBeNull();
     await user.click(screen.getByRole("button", { name: "编辑 p/p-main" }));
-    expect(screen.getByPlaceholderText(/Base URL/)).toHaveValue("https://api.example.com/v1");
+    expect(screen.getByPlaceholderText(/Base URL/)).toHaveValue(
+      "https://api.example.com/v1",
+    );
     await user.click(screen.getByRole("button", { name: "替换密钥" }));
     expect(screen.getByLabelText("新 API Key")).toHaveValue("");
-    expect(screen.getByLabelText("新 API Key")).toHaveAttribute("type", "password");
+    expect(screen.getByLabelText("新 API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
     expect(saveProvider).not.toHaveBeenCalled();
   });
 
@@ -196,14 +242,23 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     await user.click(form.getByRole("button", { name: "替换密钥" }));
     await user.type(form.getByLabelText("新 API Key"), "sk-other-test-only");
     await user.click(form.getByRole("button", { name: "显示新密钥" }));
-    await user.click(screen.getByRole("button", { name: "编辑 other/other-main" }));
+    await user.click(
+      screen.getByRole("button", { name: "编辑 other/other-main" }),
+    );
 
-    expect(screen.getByPlaceholderText(/Base URL/)).toHaveValue("https://other.example.com/v1");
-    expect(screen.getByLabelText("API Key（已保存）")).toHaveValue("••••••••••••••••");
+    expect(screen.getByPlaceholderText(/Base URL/)).toHaveValue(
+      "https://other.example.com/v1",
+    );
+    expect(screen.getByLabelText("API Key（已保存）")).toHaveValue(
+      "••••••••••••••••",
+    );
     expect(screen.queryByDisplayValue("sk-other-test-only")).toBeNull();
     await user.click(screen.getByRole("button", { name: "替换密钥" }));
     expect(screen.getByLabelText("新 API Key")).toHaveValue("");
-    expect(screen.getByLabelText("新 API Key")).toHaveAttribute("type", "password");
+    expect(screen.getByLabelText("新 API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
   });
 
   it("保存失败保留新密钥供重试，但恢复隐藏且不会误标为已保存", async () => {
@@ -217,17 +272,74 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
 
     expect(await screen.findByText(/保存失败/)).toBeTruthy();
     expect(form.getByLabelText("新 API Key")).toHaveValue("sk-retry-test-only");
-    expect(form.getByLabelText("新 API Key")).toHaveAttribute("type", "password");
+    expect(form.getByLabelText("新 API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
     expect(form.queryByLabelText("API Key（已保存）")).toBeNull();
     expect(form.getByRole("button", { name: "保存修改" })).toBeEnabled();
   });
 
-  it("已保存掩码不能用于获取模型列表，并提供手动填模型的提示", async () => {
+  it("通过已保存账号获取模型，掩码和旧密钥不会发送给浏览器或上游", async () => {
+    fetchModels.mockResolvedValue(["saved-model"]);
     const form = await openEditor();
     await user.click(form.getByRole("button", { name: "获取模型列表" }));
 
-    expect(fetchModels).not.toHaveBeenCalled();
-    expect(await screen.findByText(/已保存的密钥不会回传.*直接填写模型名保留原密钥/)).toBeTruthy();
+    expect(fetchModels).toHaveBeenCalledWith("https://api.example.com/v1", "", {
+      provider: "p",
+      accountName: "p-main",
+    });
+    expect(
+      await form.findByRole("option", { name: "saved-model" }),
+    ).toBeTruthy();
+    expect(form.getByRole("combobox")).toHaveValue("saved-model");
+    expect(form.getByLabelText("API Key（已保存）")).toHaveValue(
+      "••••••••••••••••",
+    );
+  });
+
+  it.each(["", "   "])(
+    "替换框为空时不会悄悄使用旧密钥获取模型（%j）",
+    async (blank) => {
+      const form = await openEditor();
+      await user.click(form.getByRole("button", { name: "替换密钥" }));
+      if (blank) await user.type(form.getByLabelText("新 API Key"), blank);
+      await user.click(form.getByRole("button", { name: "获取模型列表" }));
+      expect(fetchModels).not.toHaveBeenCalled();
+      expect(
+        await screen.findByText(/请填写新 API Key.*保留原密钥/),
+      ).toBeTruthy();
+      await user.click(form.getByRole("button", { name: "保留原密钥" }));
+      await user.click(form.getByRole("button", { name: "获取模型列表" }));
+      expect(fetchModels).toHaveBeenCalledWith(
+        "https://api.example.com/v1",
+        "",
+        {
+          provider: "p",
+          accountName: "p-main",
+        },
+      );
+    },
+  );
+
+  it("旧凭据不能探测未保存的新地址，显示服务端可操作的原因", async () => {
+    fetchModels.mockRejectedValueOnce(
+      new Error("Base URL 已修改，请先保存该账号或输入新 API Key"),
+    );
+    const form = await openEditor();
+    await user.clear(form.getByPlaceholderText(/Base URL/));
+    await user.type(
+      form.getByPlaceholderText(/Base URL/),
+      "https://changed.example.com/v1",
+    );
+    await user.click(form.getByRole("button", { name: "获取模型列表" }));
+    expect(
+      await screen.findByText(/获取模型列表失败.*Base URL 已修改/),
+    ).toBeTruthy();
+    expect(form.getByLabelText("API Key（已保存）")).toHaveValue(
+      "••••••••••••••••",
+    );
+    expect(saveProvider).not.toHaveBeenCalled();
   });
 
   it("输入的新密钥可用于获取模型列表，不会使用已保存掩码", async () => {
@@ -238,7 +350,10 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     await user.click(form.getByRole("button", { name: "获取模型列表" }));
 
     expect(fetchModels).toHaveBeenCalledTimes(1);
-    expect(fetchModels).toHaveBeenCalledWith("https://api.example.com/v1", "sk-probe-test-only");
+    expect(fetchModels).toHaveBeenCalledWith(
+      "https://api.example.com/v1",
+      "sk-probe-test-only",
+    );
     expect(await form.findByRole("option", { name: "model-a" })).toBeTruthy();
     expect(form.getByRole("combobox")).toHaveValue("model-a");
   });
@@ -251,7 +366,10 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     expect(form.getByLabelText("API Key")).toHaveAttribute("type", "password");
     expect(form.queryByRole("button", { name: "替换密钥" })).toBeNull();
     await user.type(form.getByPlaceholderText(/Provider 标识/), "new");
-    await user.type(form.getByPlaceholderText(/Base URL/), "https://new.example.com/v1");
+    await user.type(
+      form.getByPlaceholderText(/Base URL/),
+      "https://new.example.com/v1",
+    );
     await user.type(form.getByPlaceholderText(/模型名/), "m");
     await user.click(form.getByRole("button", { name: "保存并接入" }));
 
@@ -259,10 +377,17 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     expect(saveProvider).not.toHaveBeenCalled();
     await user.type(form.getByLabelText("API Key"), "sk-create-test-only");
     await user.click(form.getByRole("button", { name: "保存并接入" }));
-    expect(saveProvider).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "sk-create-test-only" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "添加模型" })).toBeNull());
+    expect(saveProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "sk-create-test-only" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "添加模型" })).toBeNull(),
+    );
     await user.click(screen.getByRole("button", { name: "添加模型" }));
     expect(screen.getByLabelText("API Key")).toHaveValue("");
-    expect(screen.getByLabelText("API Key")).toHaveAttribute("type", "password");
+    expect(screen.getByLabelText("API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
   });
 });

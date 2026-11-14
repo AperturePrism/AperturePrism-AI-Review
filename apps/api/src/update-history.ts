@@ -38,7 +38,7 @@ export function reconcileUpdateHistory(
   }
 
   const target = normalizeUpdateVersion(entry.to);
-  let status: "success" | "failed" | undefined;
+  let status: "success" | "failed" | "pending" | undefined;
   let reason: string | undefined;
   // A matching runtime is evidence even if the first read is much later. A
   // running script is NOT evidence: it must durably finish its script stage.
@@ -50,10 +50,18 @@ export function reconcileUpdateHistory(
     status = "success";
   } else {
     const startedAt = Date.parse(entry.updatedAt ?? entry.at);
-    const timeout = entry.status === "pending" ? PENDING_TIMEOUT_MS : RUNNING_TIMEOUT_MS;
+    const timeout =
+      entry.status === "pending" ? PENDING_TIMEOUT_MS : RUNNING_TIMEOUT_MS;
     if (!Number.isFinite(startedAt) || now.getTime() - startedAt >= timeout) {
-      status = "failed";
-      reason = entry.status === "pending" ? "confirmation_timeout" : "script_timeout";
+      if (entry.status === "pending") {
+        // 确认超时不是永久失败：目标版本可能在容器重启后才出现；保留 pending
+        // 与明确原因，后续读到目标运行时仍可转为 success。
+        status = "pending";
+        reason = "confirmation_timeout";
+      } else {
+        status = "failed";
+        reason = "script_timeout";
+      }
     }
   }
 

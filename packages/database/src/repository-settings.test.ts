@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { REPO_SCOPED_SETTING_KEYS } from "../../config/src/settings-registry.js";
 import {
   isRepositorySettingKey,
   REPOSITORY_SETTING_KEYS,
@@ -6,6 +7,11 @@ import {
 } from "./repository-settings-keys.js";
 
 describe("isRepositorySettingKey", () => {
+  it("matches the setting registry so repository controls cannot silently fail", () => {
+    expect([...REPOSITORY_SETTING_KEYS].sort()).toEqual(
+      [...REPO_SCOPED_SETTING_KEYS].sort(),
+    );
+  });
   it("accepts every per-repository key", () => {
     for (const key of REPOSITORY_SETTING_KEYS) {
       expect(isRepositorySettingKey(key)).toBe(true);

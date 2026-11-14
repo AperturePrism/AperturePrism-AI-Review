@@ -6,6 +6,9 @@ import {
   type GitHubClient,
 } from "../../../packages/github-adapter/src/index.js";
 import { reconcileCheckRuns, terminalCheckRunOutput } from "./check-runs.js";
+import { assessReview } from "../../../packages/pr-review/src/assessment.js";
+import { renderDiffForModel } from "../../../packages/pr-review/src/context.js";
+import { parseUnifiedDiff } from "../../../packages/pr-review/src/diff.js";
 
 const payload = {
   installationId: "42",
@@ -119,6 +122,56 @@ function harness(status: "completed" | "failed" | "canceled" = "completed") {
 }
 
 describe("terminalCheckRunOutput", () => {
+  it("reads the persisted review envelope and respects gate, complete coverage and hidden findings", () => {
+    const context = renderDiffForModel(
+      parseUnifiedDiff(
+        "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-export const a = 1;\n+export const a = 2;\n",
+      ),
+    );
+    const approved = {
+      ...review,
+      contractVersion: "pr-review/v1" as const,
+      overallTone: "approve" as const,
+    };
+    const assessment = assessReview(approved, context);
+    expect(
+      terminalCheckRunOutput("completed", { ...approved, assessment }, null)
+        .conclusion,
+    ).toBe("success");
+    expect(
+      terminalCheckRunOutput(
+        "completed",
+        {
+          ...approved,
+          assessment: {
+            ...assessment,
+            gate: { ...assessment.gate, status: "failed" },
+          },
+        },
+        null,
+      ).conclusion,
+    ).toBe("failure");
+    expect(
+      terminalCheckRunOutput(
+        "completed",
+        {
+          ...approved,
+          assessment: {
+            ...assessment,
+            coverage: { ...assessment.coverage, changedLineRatio: 0.5 },
+          },
+        },
+        null,
+      ).conclusion,
+    ).toBe("neutral");
+    expect(
+      terminalCheckRunOutput(
+        "completed",
+        { ...approved, assessment: { ...assessment, excluded: [{}] } },
+        null,
+      ).conclusion,
+    ).toBe("neutral");
+  });
   it.each(["failed", "canceled"] as const)(
     "uses the %s task state even if an old result exists",
     (status) => {

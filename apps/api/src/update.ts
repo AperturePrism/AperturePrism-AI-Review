@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
@@ -376,34 +377,43 @@ async function runUpdate(
         env: { ...process.env, FORCE_COLOR: "0" },
         stdio: ["ignore", "pipe", "pipe"],
       });
-      child.stdout.on("data", (chunk: Buffer) => {
-        for (const line of chunk.toString("utf8").split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const parsed = JSON.parse(trimmed) as {
-              level?: string;
-              stage?: string;
-              message?: string;
-            };
-            if (parsed.level === "stage") {
-              send("stage", { stage: parsed.stage ?? "unknown", message: parsed.message ?? "" });
-            } else {
-              push(parsed.level ?? "info", parsed.message ?? trimmed);
-            }
-          } catch {
-            push("info", trimmed);
+      const stdout = createLineReader((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        try {
+          const parsed = JSON.parse(trimmed) as {
+            level?: string;
+            stage?: string;
+            message?: string;
+          };
+          if (parsed.level === "stage") {
+            send("stage", {
+              stage: parsed.stage ?? "unknown",
+              message: parsed.message ?? "",
+            });
+          } else {
+            push(parsed.level ?? "info", parsed.message ?? trimmed);
           }
+        } catch {
+          push("info", trimmed);
         }
       });
-      child.stderr.on("data", (chunk: Buffer) => {
-        for (const line of chunk.toString("utf8").split("\n")) {
-          const trimmed = line.trim();
-          if (trimmed) push("warn", trimmed);
-        }
+      const stderr = createLineReader((line) => {
+        const trimmed = line.trim();
+        if (trimmed) push("warn", trimmed);
       });
+      child.stdout.on("data", (chunk: Buffer) => stdout.write(chunk));
+      child.stderr.on("data", (chunk: Buffer) => stderr.write(chunk));
       child.on("error", () => void complete(false, "script_start_failed"));
-      child.on("close", (code) => void complete(code === 0, code === 0 ? undefined : `script_exit_${code}`));
+      child.on("close", (code) => {
+        // 关闭前冲刷解码器与最后一个不带换行的尾行，避免截断多字节字符。
+        stdout.end();
+        stderr.end();
+        void complete(
+          code === 0,
+          code === 0 ? undefined : `script_exit_${code}`,
+        );
+      });
     } catch {
       void complete(false, "script_start_failed");
     }
@@ -511,6 +521,31 @@ export async function handleUpdateHistory(
 }
 
 /* ---------- helpers ---------- */
+
+/**
+ * 子进程 chunk 不保证按行或按 UTF-8 字符边界到达；按解码后的完整行回调，
+ * 并在 end() 时冲刷残留的多字节字符与无换行尾行。
+ */
+export function createLineReader(onLine: (line: string) => void): {
+  write: (chunk: Buffer) => void;
+  end: () => void;
+} {
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  const consume = (text: string): void => {
+    const lines = (pending + text).split(/\r\n|\r|\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) onLine(line);
+  };
+  return {
+    write: (chunk) => consume(decoder.write(chunk)),
+    end: () => {
+      consume(decoder.end());
+      if (pending) onLine(pending);
+      pending = "";
+    },
+  };
+}
 
 function json(response: ServerResponse, status: number, body: unknown, requestId: string): void {
   response.writeHead(status, {

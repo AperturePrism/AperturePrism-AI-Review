@@ -1,4 +1,5 @@
 export * from "./audit.js";
+export * from "./auto-merge.js";
 export * from "./backup.js";
 export * from "./backup-redact.js";
 export * from "./client.js";

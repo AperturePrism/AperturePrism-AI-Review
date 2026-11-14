@@ -226,6 +226,33 @@ describe("GitHub API client", () => {
     }
   });
 
+  it("distinguishes a 403 secondary rate limit from an authorization failure", async () => {
+    const { client } = clientWith(
+      withToken(
+        () =>
+          new Response("slow", {
+            status: 403,
+            headers: {
+              "retry-after": "30",
+              "x-ratelimit-remaining": "0",
+            },
+          }),
+      ),
+    );
+    try {
+      await client.getIssue({
+        installationId: "42",
+        owner: "o",
+        name: "r",
+        number: 7,
+      });
+      throw new Error("expected the request to fail");
+    } catch (error) {
+      expect((error as GitHubApiError).category).toBe("rate_limited");
+      expect((error as GitHubApiError).retryAfterMs).toBe(30_000);
+    }
+  });
+
   it("reports network failures and caller cancellation distinctly", async () => {
     const broken = clientWith(() => {
       throw new Error("ECONNRESET");

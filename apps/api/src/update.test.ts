@@ -257,11 +257,42 @@ describe("history reconciliation", () => {
     expect(reconcileUpdateHistory([attempt()], "v1.2.18", new Date(NOW.getTime() + 10 * 60_000)))
       .toMatchObject({ inProgress: false, items: [{ status: "success", ok: true }] });
   });
-  it.each([
-    ["pending", 3, "confirmation_timeout"], ["running", 30, "script_timeout"],
-  ] as const)("expires %s with a distinct reason", (status, minutes, reason) => {
-    expect(reconcileUpdateHistory([attempt({ status })], "v1.2.17", new Date(NOW.getTime() + minutes * 60_000)))
-      .toMatchObject({ inProgress: false, items: [{ status: "failed", ok: false, reason }] });
+  it("keeps a timed-out pending attempt open for later runtime confirmation", () => {
+    expect(
+      reconcileUpdateHistory(
+        [attempt({ status: "pending" })],
+        "v1.2.17",
+        new Date(NOW.getTime() + 3 * 60_000),
+      ),
+    ).toMatchObject({
+      inProgress: false,
+      items: [{ status: "pending", ok: false, reason: "confirmation_timeout" }],
+    });
+  });
+  it("confirms a timed-out pending attempt once the target runtime appears", () => {
+    const expired = attempt({
+      status: "pending",
+      reason: "confirmation_timeout",
+      updatedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
+    });
+    expect(
+      reconcileUpdateHistory([expired], "v1.2.18", new Date(NOW.getTime() + 10 * 60_000)),
+    ).toMatchObject({
+      inProgress: false,
+      items: [{ status: "success", ok: true }],
+    });
+  });
+  it("expires a running script with a distinct reason", () => {
+    expect(
+      reconcileUpdateHistory(
+        [attempt({ status: "running" })],
+        "v1.2.17",
+        new Date(NOW.getTime() + 30 * 60_000),
+      ),
+    ).toMatchObject({
+      inProgress: false,
+      items: [{ status: "failed", ok: false, reason: "script_timeout" }],
+    });
   });
   it("does not rewrite legacy bool-only history or older pending entries", () => {
     const legacy = { at: NOW.toISOString(), from: "latest", to: "v1.2.18", ok: true };
@@ -348,12 +379,12 @@ describe("GET /update/history", () => {
     await api.handleUpdateHistory(res.response, "request-1", history.db);
     expect(res.json()).toMatchObject({ currentVersion: "v1.2.18", inProgress: true, items: [{ status: "pending", ok: false }] });
   });
-  it("durably expires pending without claiming requested target as currentVersion", async () => {
+  it("keeps timed-out pending open without claiming the requested target as currentVersion", async () => {
     const history = historyDatabase([attempt({ updatedAt: new Date(NOW.getTime() - 3 * 60_000).toISOString() })]);
     const res = makeResponse();
     await api.handleUpdateHistory(res.response, "request-1", history.db);
-    expect(res.json()).toMatchObject({ currentVersion: "v1.2.17", inProgress: false, items: [{ status: "failed", reason: "confirmation_timeout", ok: false }] });
-    expect(history.items()[0]?.status).toBe("failed");
+    expect(res.json()).toMatchObject({ currentVersion: "v1.2.17", inProgress: false, items: [{ status: "pending", reason: "confirmation_timeout", ok: false }] });
+    expect(history.items()[0]?.status).toBe("pending");
   });
   it.each(["db read error", "corrupt history"])("fails closed on %s", async (failure) => {
     const history = historyDatabase();

@@ -67,6 +67,18 @@ function makeGithub(): GitHubClient {
       additions: 2,
       deletions: 1,
     }),
+    getPullRequestMergeState: async () => {
+      throw new Error("context construction must not inspect auto-merge state");
+    },
+    getCommitChecks: async () => {
+      throw new Error("context construction must not inspect auto-merge checks");
+    },
+    listPullRequestReviewStates: async () => {
+      throw new Error("context construction must not inspect merge approvals");
+    },
+    mergePullRequest: async () => {
+      throw new Error("context construction must never merge a pull request");
+    },
     listPullRequests: async () => [],
     createIssue: async () => ({ number: 1, htmlUrl: "" }),
     updateIssue: async () => ({ number: 1, htmlUrl: "" }),
