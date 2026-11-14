@@ -68,15 +68,23 @@
 
     <div class="container">
       <div class="chlog__meta mono">
-        <span>当前最新 <strong>v1.2.17</strong></span>
+        <span>当前最新 <strong>v1.3.0-beta</strong></span>
         <i></i>
-        <span>共 129 个版本</span>
+        <span>共 130 个版本</span>
         <i></i>
         <span>起始 2026-08-19 21:29</span>
       </div>
 
       <div class="timeline" id="timeline">
         <details class="ver" open data-latest="">
+          <summary>
+            <span class="ver__tag">v1.3.0-beta</span>
+            <span class="ver__date mono">2026-11-14 17:22</span>
+            <span class="ver__count mono">39 项</span>
+          </summary>
+          <ul class="ver__items"><li class="cl-misc"><span class="cl-tag">misc</span><span>对齐 diff 预算与降级标记的断言</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>web 构建阶段复制根 tsconfig.package.json</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>对齐跨批次任务去重键的集成测试</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>收紧全局规则与模型账户的管理员边界</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>加固自动合并重试、批次幂等与检查判定</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>修复已有账号模型获取并集中管理全局审核规则</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>修复 workbench 报告测试在 jsdom 下的 Blob 跨 realm 读取失败</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>add checked auto-merge and multi-select review batches</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>verify running target before reporting update success</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>将归并后的规则与知识正确回灌分析摘要</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>避免把旧版本镜像报告为可用更新</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>按完整 UTF-8 行解析更新脚本日志</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>保留系统主题跟随并仅持久化主动选择</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>隔离 SSE 地址与重连实例的状态</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>统一会话到期瞬间的失效与清理边界</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>按登录身份隔离 GET 缓存和迟到响应</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>忽略重连重放的已应用任务事件</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>原子恢复备份中的设置与模型策略</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>隔离指标快照与内部时长桶</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>校验供应商响应与工具调用结构</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>启动时校验模型供应商 HTTP 地址</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>统计失败专家已消耗的用量与尝试</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>拒绝使用空白证据支撑高等级判断</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>强制兑现调用超时与取消边界</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>执行 diff 总 token 预算并保留预算配置</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>持久化工具调用和修复后的审查结果</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>无效行内锚点重试时保留审查结论</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>用 PR head SHA 预读变更文件</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>保留 diff 内类似路径头的代码行</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>保留带作用域包名避免错误信号重合</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>正确遵守零评论上下文预算</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>校验嵌入响应并按输入索引排列向量</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>让图片下载超时覆盖响应体读取</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>将任务取消信号传递到判断修复调用</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>合并并发令牌刷新并允许失败后重试</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>校验数值字段避免生成错误消息身份</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>分页读取安装可访问的全部仓库</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>拒绝命令表原型链上的伪命令</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>识别 HTTP 成功响应中的动作失败</span></li></ul>
+        </details>
+        <details class="ver" open>
           <summary>
             <span class="ver__tag">v1.2.17</span>
             <span class="ver__date mono">2026-11-13 21:20</span>
@@ -164,7 +172,7 @@
           </summary>
           <ul class="ver__items"><li class="cl-misc"><span class="cl-tag">misc</span><span>深读单独 15min deadline，避免读仓多轮工具循环大上下文推理超时（issue #71/#73）</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>主分析空响应有限重试，避免 reasoning 模型偶发空 content 致任务失败（issue #72/#71）</span></li><li class="cl-misc"><span class="cl-tag">misc</span><span>自动更新官网更新日志页（2026-09-19）</span></li></ul>
         </details>
-        <details class="ver" open>
+        <details class="ver">
           <summary>
             <span class="ver__tag">v1.2.6</span>
             <span class="ver__date mono">2026-09-20 16:34</span>
