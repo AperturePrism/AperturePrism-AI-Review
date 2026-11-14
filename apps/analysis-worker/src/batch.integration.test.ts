@@ -21,9 +21,10 @@ import type {
 import {
   createBatchTaskStore,
   createWorkbenchBatchDispatcher,
-  workbenchBatchTaskKey,
+  workbenchTaskDedupeKey,
   type WorkbenchBatchDispatcher,
 } from "./batch.js";
+import { PR_REVIEW_POLICY_VERSION } from "../../../packages/pr-review/src/index.js";
 
 const databaseUrl = process.env.APERTUREPRISM_INTEGRATION_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -161,7 +162,13 @@ integration("workbench batch PostgreSQL dispatch", () => {
     expect((await dispatcher.tick()).dispatched).toBe(1);
     const store = createBatchTaskStore(database.db);
     const task = await store.find(
-      workbenchBatchTaskKey(batch, batch.items[0]!),
+      workbenchTaskDedupeKey({
+        repositoryId,
+        taskType: "pr_review",
+        number: 7,
+        revision: sha,
+        policyVersion: PR_REVIEW_POLICY_VERSION,
+      }),
     );
     expect(task).toMatchObject({
       repositoryId,
