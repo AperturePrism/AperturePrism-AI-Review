@@ -38,6 +38,9 @@ import { useToast } from "../components/Toast";
 // 固定长度的已保存状态标记，不是原密钥，也不能作为凭据提交。
 const SAVED_API_KEY_MASK = "••••••••••••••••";
 
+/** 与服务端一致地比较 Base URL（忽略空白与尾斜杠）。 */
+const normalizeBaseUrl = (value: string) => value.trim().replace(/\/+$/, "");
+
 /**
  * 新增/编辑模型的表单。此前模型配置只能在安装向导里做一次，装完之后本页是纯只读，
  * 用户「点进模型路由却找不到配置的地方」（issue #2）。后端 /setup/provider 只要求
@@ -84,11 +87,20 @@ function AddProviderForm({
   const keepingSavedKey = editing && !replacingKey;
   // 已保存标记只用于展示；后端用空串保留原密文，绝不发送掩码。
   const submittedApiKey = keepingSavedKey ? "" : apiKey.trim();
+  // 服务端只允许用已存密钥访问已保存的 Base URL（saved_provider_url_changed）。
+  // 编辑时改了地址又沿用旧密钥，必须先保存或用新密钥验证，这里提前拦住。
+  const savedUrlChanged =
+    editing && normalizeBaseUrl(baseUrl) !== normalizeBaseUrl(initial?.baseUrl ?? "");
+  const mustSaveBeforeProbe = savedUrlChanged && keepingSavedKey;
 
   // 拉取模型列表既是便利，也是对 baseUrl/apiKey 的一次连通性验证。
   const probeModels = async () => {
     if (!baseUrl.trim()) {
       toast.error("请先填写 Base URL");
+      return;
+    }
+    if (mustSaveBeforeProbe) {
+      toast.error("Base URL 已修改，请先保存，或输入新 API Key 后再获取模型");
       return;
     }
     if (!submittedApiKey && !keepingSavedKey) {
@@ -261,7 +273,12 @@ function AddProviderForm({
           <button
             className="btn"
             onClick={probeModels}
-            disabled={probing || saving}
+            disabled={probing || saving || mustSaveBeforeProbe}
+            title={
+              mustSaveBeforeProbe
+                ? "Base URL 已修改，请先保存，或输入新 API Key 后获取"
+                : undefined
+            }
           >
             {probing ? "获取中…" : "获取模型列表"}
           </button>
@@ -273,7 +290,9 @@ function AddProviderForm({
             style={{ margin: 0, fontSize: 12 }}
           >
             {keepingSavedKey
-              ? "已保存 API Key，将保留原密钥。可直接获取模型列表；原密钥不会回传，仅由服务端使用；如需更换请点「替换密钥」。"
+              ? mustSaveBeforeProbe
+                ? "Base URL 已修改：请先点「保存修改」，或输入新 API Key 后再获取模型列表。"
+                : "已保存 API Key，将保留原密钥。可直接获取模型列表；原密钥不会回传，仅由服务端使用；如需更换请点「替换密钥」。"
               : "仅显示本次输入的新密钥；留空或点「保留原密钥」不会修改已保存的密钥。"}
           </p>
         ) : null}

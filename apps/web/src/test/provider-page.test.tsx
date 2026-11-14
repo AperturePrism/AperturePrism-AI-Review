@@ -322,24 +322,41 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     },
   );
 
-  it("旧凭据不能探测未保存的新地址，显示服务端可操作的原因", async () => {
-    fetchModels.mockRejectedValueOnce(
-      new Error("Base URL 已修改，请先保存该账号或输入新 API Key"),
-    );
+  it("旧凭据不能探测未保存的新地址，提示先保存或输入新密钥", async () => {
     const form = await openEditor();
     await user.clear(form.getByPlaceholderText(/Base URL/));
     await user.type(
       form.getByPlaceholderText(/Base URL/),
       "https://changed.example.com/v1",
     );
-    await user.click(form.getByRole("button", { name: "获取模型列表" }));
+    const probe = form.getByRole("button", { name: "获取模型列表" });
+    expect(probe).toBeDisabled();
     expect(
-      await screen.findByText(/获取模型列表失败.*Base URL 已修改/),
+      form.getByText(/Base URL 已修改.*先.*保存/),
     ).toBeTruthy();
+    await user.click(probe);
+    expect(fetchModels).not.toHaveBeenCalled();
     expect(form.getByLabelText("API Key（已保存）")).toHaveValue(
       "••••••••••••••••",
     );
     expect(saveProvider).not.toHaveBeenCalled();
+  });
+
+  it("新地址配上新密钥后可以直接获取模型列表", async () => {
+    fetchModels.mockResolvedValueOnce(["model-a"]);
+    const form = await openEditor();
+    await user.clear(form.getByPlaceholderText(/Base URL/));
+    await user.type(
+      form.getByPlaceholderText(/Base URL/),
+      "https://changed.example.com/v1",
+    );
+    await user.click(form.getByRole("button", { name: "替换密钥" }));
+    await user.type(form.getByLabelText("新 API Key"), "sk-new-address-only");
+    await user.click(form.getByRole("button", { name: "获取模型列表" }));
+    expect(fetchModels).toHaveBeenCalledWith(
+      "https://changed.example.com/v1",
+      "sk-new-address-only",
+    );
   });
 
   it("输入的新密钥可用于获取模型列表，不会使用已保存掩码", async () => {
