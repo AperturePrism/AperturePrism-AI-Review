@@ -416,3 +416,39 @@ it("records a successful external publication even if cancellation arrives just 
   expect(insert).toHaveBeenCalledOnce();
   expect(insert.mock.calls[0]![0].externalObjectId).toBe("57");
 });
+
+it("retries invalid inline anchors without changing the requested review event", async () => {
+  const calls: Parameters<GitHubReviewClient["publishReview"]>[0][] = [];
+  const publishReview: GitHubReviewClient["publishReview"] = async (input) => {
+    calls.push(input);
+    if (input.comments?.length) throw Object.assign(new Error("invalid anchor"), { status: 422 });
+    return { id: 9 };
+  };
+  const result = await publishAssessment({
+    store: store(), github: { publishReview }, taskId: "t", installationId: "42",
+    owner: "o", name: "r", pullNumber: 9, revision: "invalid-anchor",
+    review: { ...review, findings: [{ ...meaninglessChange, severity: "high" }] },
+  });
+  expect(result).toEqual({ reviewId: 9, created: true });
+  expect(calls.map((call) => call.event)).toEqual(["REQUEST_CHANGES", "REQUEST_CHANGES"]);
+  expect(calls[1]?.comments).toBeUndefined();
+  expect(calls[1]?.body).toContain(meaninglessChange.message);
+});
+
+it("handles an own-PR rejection after discarding invalid inline anchors", async () => {
+  const calls: Parameters<GitHubReviewClient["publishReview"]>[0][] = [];
+  const publishReview: GitHubReviewClient["publishReview"] = async (input) => {
+    calls.push(input);
+    if (input.comments?.length || input.event === "REQUEST_CHANGES") {
+      throw Object.assign(new Error("GitHub responded with 422"), { status: 422 });
+    }
+    return { id: 10 };
+  };
+  await publishAssessment({
+    store: store(), github: { publishReview }, taskId: "t", installationId: "42",
+    owner: "o", name: "r", pullNumber: 9, revision: "own-pr-invalid-anchor",
+    review: { ...review, findings: [meaninglessChange] },
+  });
+  expect(calls.map((call) => call.event)).toEqual(["REQUEST_CHANGES", "REQUEST_CHANGES", "COMMENT"]);
+  expect(calls[2]?.comments).toBeUndefined();
+});

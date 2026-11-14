@@ -178,59 +178,41 @@ async function publishWithOwnPrFallback(
   input: PublishReviewInput,
   event: "COMMENT" | "APPROVE" | "REQUEST_CHANGES",
 ): Promise<{ id: number }> {
-  const comments = renderInlineComments(input.review);
-  try {
-    input.signal?.throwIfAborted();
-    return await input.github.publishReview({
-      installationId: input.installationId,
-      owner: input.owner,
-      name: input.name,
-      pullNumber: input.pullNumber,
-      revision: input.revision,
-      body: renderReviewBody(input.review, input.assessment),
-      event,
-      comments,
-    });
-  } catch (error) {
-    input.signal?.throwIfAborted();
-    if (error instanceof Error && error.name === "AbortError") throw error;
-    // GitHub returns 422 with "Can not request changes on your own pull
-    // request" when the bot reviews its own PR. The client maps that to an
-    // invalid_request error whose message does not carry the body detail, so
-    // degrade on (event, status) rather than message text.
-    const ownPrRejection =
-      event === "REQUEST_CHANGES" &&
-      (isGithubStatus(error, 422) ||
-        (error instanceof Error && /own pull request/i.test(error.message)));
-    if (ownPrRejection) {
+  let comments: ReturnType<typeof renderInlineComments> | undefined =
+    renderInlineComments(input.review);
+  let currentEvent = event;
+  for (;;) {
+    try {
       input.signal?.throwIfAborted();
-      return input.github.publishReview({
+      return await input.github.publishReview({
         installationId: input.installationId,
         owner: input.owner,
         name: input.name,
         pullNumber: input.pullNumber,
         revision: input.revision,
         body: renderReviewBody(input.review, input.assessment),
-        event: "COMMENT",
-        comments,
+        event: currentEvent,
+        ...(comments === undefined ? {} : { comments }),
       });
-    }
-    // Inline comments also 422 when an anchored line is not inside the diff
-    // hunk (e.g. a context line). Retry once without them — the review body
-    // still carries every finding, so nothing is lost.
-    if (comments.length > 0 && isGithubStatus(error, 422)) {
+    } catch (error) {
       input.signal?.throwIfAborted();
-      return input.github.publishReview({
-        installationId: input.installationId,
-        owner: input.owner,
-        name: input.name,
-        pullNumber: input.pullNumber,
-        revision: input.revision,
-        body: renderReviewBody(input.review, input.assessment),
-        event,
-      });
+      if (error instanceof Error && error.name === "AbortError") throw error;
+      // 无效行内锚点与 own-PR 拒绝都可能返回 422。先去锚点重试，保留审查
+      // 结论与 event；再把 own PR 的 REQUEST_CHANGES 降级为 COMMENT。
+      if (comments && comments.length > 0 && isGithubStatus(error, 422)) {
+        comments = undefined;
+        continue;
+      }
+      const ownPrRejection =
+        currentEvent === "REQUEST_CHANGES" &&
+        (isGithubStatus(error, 422) ||
+          (error instanceof Error && /own pull request/i.test(error.message)));
+      if (ownPrRejection) {
+        currentEvent = "COMMENT";
+        continue;
+      }
+      throw error;
     }
-    throw error;
   }
 }
 
