@@ -113,7 +113,9 @@ export async function buildPrContext(
     .map((f) => ({ path: f.newPath, churn: f.additions + f.deletions }))
     .sort((a, b) => b.churn - a.churn)
     .slice(0, CHANGED_FILE_PRELOAD_MAX);
-  const headSha = pullRequest.headSha; // GitHub 适配器已经把 head.sha 规范化为此字段。
+  // GitHub 适配器已把 head.sha 规范化为 headSha；预读固定到被审查的同一提交，
+  // 保证 fork PR 也读到正确 revision。
+  const headSha = pullRequest.headSha;
   const preloadedFiles: { path: string; content: string }[] = [];
   let preloadTotal = 0;
   for (const f of textFiles) {
