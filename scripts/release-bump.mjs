@@ -24,7 +24,8 @@ function bump(version, part) {
   if (part === "patch") return `${major}.${minor}.${patch + 1}`;
   if (part === "minor") return `${major}.${minor + 1}.0`;
   if (part === "major") return `${major + 1}.0.0`;
-  if (/^\d+\.\d+\.\d+$/.test(part)) return part;
+  // 允许预发布后缀（如 1.3.0-beta），便于灰度版本直接指定。
+  if (/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(part)) return part;
   throw new Error(`无效的版本参数：${part}（可用 patch/minor/major 或 x.y.z）`);
 }
 
