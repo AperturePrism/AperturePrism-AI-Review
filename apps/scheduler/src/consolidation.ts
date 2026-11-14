@@ -227,6 +227,7 @@ export async function memoryConsolidationSweep(
           title: entry.title,
           content: entry.content,
           sourceType: "consolidation",
+          consolidated: true,
         });
         rules += 1;
       }
