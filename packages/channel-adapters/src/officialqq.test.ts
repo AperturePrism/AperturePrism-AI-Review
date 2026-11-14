@@ -134,3 +134,58 @@ describe("official QQ access token store", () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe("official QQ token refresh concurrency", () => {
+  it("coalesces concurrent cold-cache and expired-cache refreshes", async () => {
+    let calls = 0;
+    let time = 1_700_000_000_000;
+    const store = createOfficialQqTokenStore({
+      appId: "A",
+      clientSecret: "S",
+      now: () => time,
+      fetchImpl: (async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify({ access_token: `token-${calls}`, expires_in: 7200 }),
+        );
+      }) as typeof fetch,
+    });
+    expect(
+      await Promise.all(Array.from({ length: 10 }, () => store.getToken())),
+    ).toEqual(Array(10).fill("token-1"));
+    expect(calls).toBe(1);
+    time += 7_200_000;
+    expect(await Promise.all([store.getToken(), store.getToken()])).toEqual([
+      "token-2",
+      "token-2",
+    ]);
+    expect(calls).toBe(2);
+  });
+
+  it("shares refresh failures without preventing a later retry", async () => {
+    let calls = 0;
+    const store = createOfficialQqTokenStore({
+      appId: "A",
+      clientSecret: "S",
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1
+          ? new Response("unavailable", { status: 503 })
+          : new Response(
+              JSON.stringify({ access_token: "recovered", expires_in: 7200 }),
+            );
+      }) as typeof fetch,
+    });
+    const results = await Promise.allSettled([
+      store.getToken(),
+      store.getToken(),
+    ]);
+    expect(results.map((result) => result.status)).toEqual([
+      "rejected",
+      "rejected",
+    ]);
+    expect(calls).toBe(1);
+    expect(await store.getToken()).toBe("recovered");
+    expect(calls).toBe(2);
+  });
+});

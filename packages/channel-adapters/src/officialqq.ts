@@ -161,6 +161,7 @@ export function createOfficialQqTokenStore(input: {
   const fetchImpl = input.fetchImpl ?? fetch;
   const now = input.now ?? (() => Date.now());
   let cached: { token: string; expiresAt: number } | null = null;
+  let refreshing: Promise<string> | null = null;
 
   const fetchToken = async (): Promise<{
     token: string;
@@ -187,8 +188,15 @@ export function createOfficialQqTokenStore(input: {
   return {
     getToken: async () => {
       if (cached && cached.expiresAt - now() > 60_000) return cached.token;
-      cached = await fetchToken();
-      return cached.token;
+      refreshing ??= fetchToken()
+        .then((next) => {
+          cached = next;
+          return next.token;
+        })
+        .finally(() => {
+          refreshing = null;
+        });
+      return refreshing;
     },
   };
 }
