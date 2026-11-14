@@ -73,7 +73,10 @@ jobs:
             latest=auto
           tags: |
             type=ref,event=branch
+            # 同时产出 v1.2.3 与 1.2.3 两种 tag：预发布镜像按 semver 解析会去掉 v 前缀，
+            # 部署侧不必猜前缀（VPS 用 1.3.0-beta，CNB 用 v1.3.0-beta）。
             type=semver,pattern=v{{version}}
+            type=semver,pattern={{version}}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
