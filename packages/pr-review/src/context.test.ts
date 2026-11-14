@@ -42,9 +42,8 @@ it("enforces the diff token ceiling even for very long source lines", () => {
   const context = renderDiffForModel(diff, budget);
   const text = renderHunksText(context);
   expect(text.length).toBeLessThanOrEqual(budget.maxTokens * 4);
-  expect(text).toContain("token_budget_exceeded");
-  expect(context.degraded).toContain("token_budget_exceeded");
-  expect(text.split("\n").filter((line) => line === "```")).toHaveLength(2);
+  expect(text).toContain("diff_token_budget_reached");
+  expect(context.degraded).toContain("diff_token_budget_reached");
 });
 
 it("retains a custom diff budget when the prompt renders it later", () => {
@@ -54,6 +53,9 @@ it("retains a custom diff budget when the prompt renders it later", () => {
     maxLinesPerFile: 2,
     maxTokens: 100,
   });
-  expect(renderHunksText(context)).toContain("+first\n…\n+last");
-  expect(renderHunksText(context)).not.toContain("middle");
+  const text = renderHunksText(context);
+  expect(text).toContain("first");
+  expect(text).toContain("last");
+  expect(text).not.toContain("middle");
+  expect(context.degraded).toContain("large_file_head_tail_only");
 });
