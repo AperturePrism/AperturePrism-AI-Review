@@ -234,11 +234,7 @@ function buildLeadRequest(
   rendered: string,
   repoMemory: string | undefined,
 ): ModelInvocationRequest {
-  const lines: string[] = [
-    "以下是本次变更的原始上下文：",
-    "",
-    rendered,
-  ];
+  const lines: string[] = ["以下是本次变更的原始上下文：", "", rendered];
   if (repoMemory && repoMemory.length > 0) {
     lines.push("", "## 仓库记忆（过往审查经验）", repoMemory);
   }
@@ -392,10 +388,12 @@ async function invokeExpert(
       ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
     });
 
+  const completedAttempts: ModelAttemptOutcome[] = [];
   try {
     const main = await route(
       buildExpertRequest(expert, skillsText, input.rendered, input.repoMemory),
     );
+    completedAttempts.push(...main.attempts);
     const validation = parseExpertJson(main.response.content);
     if (validation.outcome === "valid") {
       return {
@@ -418,8 +416,9 @@ async function invokeExpert(
       ),
       main.candidate,
     );
+    completedAttempts.push(...repair.attempts);
     const repaired = parseExpertJson(repair.response.content);
-    const attempts = [...main.attempts, ...repair.attempts];
+    const attempts = completedAttempts;
     const usage = totalUsage(main.response.usage, repair.response.usage);
     if (repaired.outcome === "valid") {
       return {
@@ -433,7 +432,10 @@ async function invokeExpert(
     return { ok: false, attempts };
   } catch (error) {
     // A single broken expert must not take down the whole review.
-    return { ok: false, attempts: attemptsOf(error) };
+    return {
+      ok: false,
+      attempts: [...completedAttempts, ...attemptsOf(error)],
+    };
   }
 }
 
@@ -445,8 +447,18 @@ async function invokeLead(
   now: () => number,
   startedAt: number,
 ): Promise<
-  | { valid: true; review: PrReviewContract; candidate: ModelCandidate; usage: ModelUsage; attempts: readonly ModelAttemptOutcome[] }
-  | { valid: false; usage: ModelUsage; attempts: readonly ModelAttemptOutcome[] }
+  | {
+      valid: true;
+      review: PrReviewContract;
+      candidate: ModelCandidate;
+      usage: ModelUsage;
+      attempts: readonly ModelAttemptOutcome[];
+    }
+  | {
+      valid: false;
+      usage: ModelUsage;
+      attempts: readonly ModelAttemptOutcome[];
+    }
 > {
   const route = (request: ModelInvocationRequest, sticky?: ModelCandidate) =>
     routeModelInvocation(deps.adapters, {
@@ -460,7 +472,9 @@ async function invokeLead(
       ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
     });
 
-  const main = await route(buildLeadRequest(experts, input.rendered, input.repoMemory));
+  const main = await route(
+    buildLeadRequest(experts, input.rendered, input.repoMemory),
+  );
   const validation = parsePrReviewJson(main.response.content);
   if (validation.outcome === "valid") {
     return {
@@ -531,7 +545,12 @@ export async function runExpertReview(
     now,
     startedAt,
   );
-  const usage = totalUsage(lead.usage, ...successes.map((entry) => entry.usage));
+  // Invalid expert JSON still consumes tokens. Count every completed routing
+  // attempt, including experts whose repair failed, rather than only merges.
+  const usage = totalUsage(
+    lead.usage,
+    ...allAttempts.flatMap((attempt) => (attempt.usage ? [attempt.usage] : [])),
+  );
   const attempts = [...allAttempts, ...lead.attempts];
   const expertsMerged = successes.length;
 
