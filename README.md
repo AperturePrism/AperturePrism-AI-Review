@@ -123,7 +123,7 @@ AperturePrism 把「AI 代码审查」做成了一条可落地的产品链路，
   专家团队/记忆
 ```
 
-- **多模型路由**：`MODEL_PROVIDER_BASE_URLS` 配置 OpenAI 兼容 Provider；模型密钥 AES-GCM 加密存 `provider_accounts`，Worker 用 `CREDENTIAL_MASTER_KEY` 解密。模型角色策略存 `model_role_policies`（issue_analysis / pr_review / duplicate_judgment / memory_consolidation / expert_review）。
+- **多模型路由**：`MODEL_PROVIDER_BASE_URLS` 配置 OpenAI 兼容 Provider；模型密钥 AES-GCM 加密存 `provider_accounts`，仅在服务端使用。编辑已有账号可直接获取模型列表，无需重填密钥。模型角色策略存 `model_role_policies`（issue_analysis / pr_review / duplicate_judgment / memory_consolidation / expert_review）。[模型列表与全局审核规则](docs/PROVIDERS-AND-GLOBAL-RULES.md)说明了已有账号与规则导入的操作方式。
 - **Embedding 独立**：`EMBEDDING_BASE_URL / EMBEDDING_API_KEY / EMBEDDING_MODEL`（默认 `nvidia/nemotron-3-embed-1b`，2048 维）。
 
 ## 文档索引

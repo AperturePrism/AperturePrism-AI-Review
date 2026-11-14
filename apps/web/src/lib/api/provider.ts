@@ -36,8 +36,18 @@ export type ProviderSaveResult = {
 export async function fetchModels(
   baseUrl: string,
   apiKey: string,
+  savedAccount?: { provider: string; accountName: string },
 ): Promise<string[]> {
-  const data = (await postSetup("/setup/models", { baseUrl, apiKey })) as {
+  const data = (await postSetup(
+    "/setup/models",
+    savedAccount && !apiKey
+      ? {
+          baseUrl,
+          provider: savedAccount.provider,
+          accountName: savedAccount.accountName,
+        }
+      : { baseUrl, apiKey },
+  )) as {
     models?: string[];
   };
   return data.models ?? [];

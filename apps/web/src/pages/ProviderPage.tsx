@@ -2,7 +2,16 @@ import { CpuIcon as PageIcon } from "../components/icons";
 import type { ConsolePage } from "../lib/navigation";
 
 /** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
-export const consolePages: ConsolePage[] = [{ path: "/provider", label: "模型路由", group: "identity", order: 32, icon: PageIcon, render: () => <ProviderPage /> }];
+export const consolePages: ConsolePage[] = [
+  {
+    path: "/provider",
+    label: "模型路由",
+    group: "identity",
+    order: 32,
+    icon: PageIcon,
+    render: () => <ProviderPage />,
+  },
+];
 
 import { useCallback, useEffect, useId, useState } from "react";
 import {
@@ -14,7 +23,12 @@ import {
   type ProviderAccount,
   type ProviderOverview,
 } from "../lib/api";
-import { GearIcon, RefreshIcon, TrashIcon, PencilIcon } from "../components/icons";
+import {
+  GearIcon,
+  RefreshIcon,
+  TrashIcon,
+  PencilIcon,
+} from "../components/icons";
 import { ErrorPanel, LoadingRows } from "../components/ui";
 import { explainUnknown } from "../lib/errors";
 import { modelRoleLabel } from "../lib/labels";
@@ -73,22 +87,32 @@ function AddProviderForm({
 
   // 拉取模型列表既是便利，也是对 baseUrl/apiKey 的一次连通性验证。
   const probeModels = async () => {
-    if (!baseUrl.trim() || !submittedApiKey) {
+    if (!baseUrl.trim()) {
+      toast.error("请先填写 Base URL");
+      return;
+    }
+    if (!submittedApiKey && !keepingSavedKey) {
       toast.error(
         editing
-          ? "已保存的密钥不会回传；获取模型列表需填写 Base URL 并输入新 API Key，或直接填写模型名保留原密钥"
-          : "请先填写 Base URL 与 API Key",
+          ? "请填写新 API Key，或点击「保留原密钥」后获取模型"
+          : "请先填写 API Key",
       );
       return;
     }
     setProbing(true);
     try {
-      const list = await fetchModels(baseUrl.trim(), submittedApiKey);
+      const list =
+        keepingSavedKey && initial
+          ? await fetchModels(baseUrl.trim(), "", {
+              provider: initial.provider,
+              accountName: initial.name,
+            })
+          : await fetchModels(baseUrl.trim(), submittedApiKey);
       setModels(list);
       if (list.length === 0) toast.info("连接成功，但该地址未返回可用模型");
       else {
         toast.success(`已获取 ${list.length} 个模型`);
-        if (!model) setModel(list[0] ?? "");
+        setModel((current) => current || (list[0] ?? ""));
       }
     } catch (err) {
       toast.error(`获取模型列表失败：${explainUnknown(err)}`);
@@ -144,7 +168,9 @@ function AddProviderForm({
       <div className="panel-title">
         <h2>{editing ? "编辑模型" : "添加模型"}</h2>
         <span className="count">
-          {editing ? "更新 baseUrl/模型，默认保留原密钥" : "保存后自动接入全部分析角色"}
+          {editing
+            ? "更新 baseUrl/模型，默认保留原密钥"
+            : "保存后自动接入全部分析角色"}
         </span>
       </div>
       <div className="stack" style={{ gap: 10 }}>
@@ -153,7 +179,7 @@ function AddProviderForm({
             className="input"
             placeholder="Provider 标识，如 newapi"
             value={provider}
-            disabled={editing}
+            disabled={editing || saving || probing}
             onChange={(e) => setProvider(e.target.value)}
           />
           <input
@@ -161,6 +187,7 @@ function AddProviderForm({
             style={{ flex: "1 1 260px" }}
             placeholder="Base URL，如 https://api.example.com/v1"
             value={baseUrl}
+            disabled={saving || probing}
             onChange={(e) => setBaseUrl(e.target.value)}
           />
         </div>
@@ -195,7 +222,9 @@ function AddProviderForm({
                 type={showApiKey ? "text" : "password"}
                 aria-label={editing ? "新 API Key" : "API Key"}
                 aria-describedby={editing ? `${apiKeyId}-hint` : undefined}
-                placeholder={editing ? "新 API Key（留空保留原密钥）" : "API Key"}
+                placeholder={
+                  editing ? "新 API Key（留空保留原密钥）" : "API Key"
+                }
                 value={apiKey}
                 onChange={(e) => {
                   setApiKey(e.target.value);
@@ -229,14 +258,22 @@ function AddProviderForm({
               ) : null}
             </>
           )}
-          <button className="btn" onClick={probeModels} disabled={probing || saving}>
+          <button
+            className="btn"
+            onClick={probeModels}
+            disabled={probing || saving}
+          >
             {probing ? "获取中…" : "获取模型列表"}
           </button>
         </div>
         {editing ? (
-          <p id={`${apiKeyId}-hint`} className="faint" style={{ margin: 0, fontSize: 12 }}>
+          <p
+            id={`${apiKeyId}-hint`}
+            className="faint"
+            style={{ margin: 0, fontSize: 12 }}
+          >
             {keepingSavedKey
-              ? "已保存 API Key，将保留原密钥。掩码仅表示已保存，原密钥不会回传；如需更换请点「替换密钥」。"
+              ? "已保存 API Key，将保留原密钥。可直接获取模型列表；原密钥不会回传，仅由服务端使用；如需更换请点「替换密钥」。"
               : "仅显示本次输入的新密钥；留空或点「保留原密钥」不会修改已保存的密钥。"}
           </p>
         ) : null}
@@ -272,7 +309,11 @@ function AddProviderForm({
           />
         </div>
         <div className="filters">
-          <button className="btn btn-primary" onClick={submit} disabled={saving || probing}>
+          <button
+            className="btn btn-primary"
+            onClick={submit}
+            disabled={saving || probing}
+          >
             {saving ? "保存中…" : editing ? "保存修改" : "保存并接入"}
           </button>
           <button
@@ -287,7 +328,8 @@ function AddProviderForm({
           </button>
         </div>
         <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-          API Key 以 AES-GCM 加密存储，仅 Worker 在进程内解密。同一 Provider
+          API Key 加密保存，仅由服务端连接供应商使用，不会回传浏览器。同一
+          Provider
           与账户名重复保存会覆盖旧密钥。新模型会被放在各角色候选的首位，原有
           候选保留为故障转移备选。
         </p>
@@ -326,7 +368,14 @@ export function ProviderPage() {
         </div>
         <div className="actions">
           <AddProviderForm onSaved={load} />
-          <button className="btn" onClick={() => { bumpCache(); load(); }} disabled={loading}>
+          <button
+            className="btn"
+            onClick={() => {
+              bumpCache();
+              load();
+            }}
+            disabled={loading}
+          >
             <RefreshIcon size={16} />
             刷新
           </button>
@@ -347,19 +396,30 @@ export function ProviderPage() {
           <p className="state state-empty">暂无数据</p>
         ) : data.policies.length === 0 ? (
           <p className="state state-empty">
-            尚未配置模型策略。点击右上角「添加模型」填写 Provider 与 API Key 即可接入。
+            尚未配置模型策略。点击右上角「添加模型」填写 Provider 与 API Key
+            即可接入。
           </p>
         ) : (
           <div className="tablewrap">
             <table className="table">
               <thead>
-                <tr><th>角色</th><th>版本</th><th>候选模型</th></tr>
+                <tr>
+                  <th>角色</th>
+                  <th>版本</th>
+                  <th>候选模型</th>
+                </tr>
               </thead>
               <tbody>
                 {data.policies.map((policy) => (
                   <tr key={policy.role}>
-                    <td><span className="chip">{modelRoleLabel(policy.role)}</span></td>
-                    <td><span className="chip mono">{policy.version}</span></td>
+                    <td>
+                      <span className="chip">
+                        {modelRoleLabel(policy.role)}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="chip mono">{policy.version}</span>
+                    </td>
                     <td>
                       <span className="tag-row">
                         {policy.candidates.map((c, i) => (
@@ -427,7 +487,7 @@ export function ProviderPage() {
           <p className="state state-empty">无账户</p>
         )}
         <p className="faint" style={{ marginTop: 12, fontSize: 12 }}>
-          凭据以 AES-GCM 加密存储，仅 Worker 在进程内解密，绝不出现在此界面。
+          凭据已加密保存，仅在服务端使用，不会回传浏览器。
         </p>
       </section>
 

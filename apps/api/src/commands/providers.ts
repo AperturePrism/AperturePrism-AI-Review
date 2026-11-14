@@ -12,6 +12,7 @@ import {
   systemSettings,
 } from "../../../../packages/database/src/index.js";
 import { audit } from "../identity.js";
+import { redactDiagnosticText } from "../../../../packages/observability/src/redaction.js";
 import { database, logger, config } from "../runtime.js";
 import { json, parseJsonBody, readBody } from "../utils/http.js";
 import { asc, like, and, eq, desc } from "drizzle-orm";
@@ -45,7 +46,10 @@ export async function handleProviders(
     .select({ key: systemSettings.key, value: systemSettings.value })
     .from(systemSettings)
     .where(like(systemSettings.key, "model_provider_base_url:%"));
-  const baseByProvider = new Map<string, string>();
+  // 旧账户可能只在环境变量配置地址；回填与 worker 使用相同的覆盖顺序。
+  const baseByProvider = new Map<string, string>(
+    Object.entries(config.modelProviderBaseUrls ?? {}),
+  );
   for (const row of baseRows) {
     const provider = row.key.slice("model_provider_base_url:".length);
     baseByProvider.set(provider, row.value);
@@ -113,79 +117,259 @@ export function providerBaseUrlSettingKey(provider: string): string {
   return `model_provider_base_url:${provider}`;
 }
 
+export class ModelListError extends Error {
+  constructor(
+    readonly status: number,
+    readonly reason: string,
+    readonly hint: string,
+    readonly diagnostics: Record<string, unknown> = {},
+  ) {
+    super(reason);
+    this.name = "ModelListError";
+  }
+}
+
+/** 完整响应受超时和大小限制；供应商回显 Authorization 时也不会传回密钥。 */
+export async function readProviderModels(
+  baseUrl: string,
+  apiKey: string,
+  options: { savedCredential?: boolean; timeoutMs?: number } = {},
+): Promise<string[]> {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(openAiModelsEndpoint(baseUrl));
+    if (
+      !["http:", "https:"].includes(endpoint.protocol) ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.search ||
+      endpoint.hash
+    )
+      throw new Error("invalid URL");
+  } catch {
+    throw new ModelListError(
+      400,
+      "invalid_provider_url",
+      "Base URL 需为不带用户名、密码或查询参数的 HTTP(S) 地址",
+    );
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? 15_000,
+  );
+  try {
+    const res = await fetch(endpoint, {
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        accept: "application/json",
+      },
+      // 旧密钥只能交给已保存的地址，不能跟随跳转换一个接收方。
+      ...(options.savedCredential ? { redirect: "error" as const } : {}),
+      signal: controller.signal,
+    });
+    const reader = res.body?.getReader();
+    let body = "";
+    if (reader) {
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > 2 * 1024 * 1024)
+            throw new ModelListError(
+              502,
+              "models_response_too_large",
+              "模型列表响应过大",
+            );
+          chunks.push(part.value);
+        }
+        body = Buffer.concat(chunks).toString("utf8");
+      } finally {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+      }
+    }
+    if (!res.ok) {
+      const detail = redactDiagnosticText(
+        body.split(apiKey).join("[redacted]"),
+        300,
+      );
+      throw new ModelListError(
+        502,
+        "models_request_failed",
+        "请检查供应商地址、密钥和访问权限",
+        {
+          httpStatus: res.status,
+          endpoint: endpoint.href,
+          ...(detail ? { detail } : {}),
+        },
+      );
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      throw new ModelListError(
+        502,
+        "invalid_models_response",
+        "供应商未返回有效的模型列表 JSON",
+      );
+    }
+    const rows =
+      data && typeof data === "object" && !Array.isArray(data)
+        ? (data as { data?: unknown }).data
+        : undefined;
+    if (!Array.isArray(rows) || rows.length > 10_000)
+      throw new ModelListError(
+        502,
+        "invalid_models_response",
+        "供应商返回的模型列表格式不正确",
+      );
+    const ids: string[] = rows.flatMap((row) =>
+      row &&
+      typeof row === "object" &&
+      typeof row.id === "string" &&
+      row.id.trim()
+        ? [row.id]
+        : [],
+    );
+    // 成功状态也可能把 Authorization 误放入模型 id；原样或拼接的完整密钥都不能回传。
+    const models = ids.filter((id) => !apiKey || !id.includes(apiKey));
+    if (ids.length > 0 && models.length === 0)
+      throw new ModelListError(
+        502,
+        "models_credential_echo",
+        "供应商模型列表包含凭据内容，已拒绝显示；请检查供应商响应",
+      );
+    return [...new Set(models)].sort();
+  } catch (error) {
+    if (error instanceof ModelListError) throw error;
+    throw new ModelListError(
+      502,
+      controller.signal.aborted
+        ? "models_fetch_timeout"
+        : "models_fetch_failed",
+      controller.signal.aborted
+        ? "请求供应商模型列表超时"
+        : "无法连接供应商模型列表，请检查地址及网络",
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 浏览器提交新密钥，或只提交已保存账号的身份；旧密钥始终留在服务端。 */
 export async function handleSetupModels(
   request: IncomingMessage,
   response: ServerResponse,
   requestId: string,
 ): Promise<void> {
   const body = await parseJsonBody(request);
-  const baseUrl =
+  let baseUrl =
     typeof body?.baseUrl === "string"
       ? body.baseUrl.trim().replace(/\/+$/, "")
       : "";
-  const apiKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
-  if (!baseUrl || !apiKey) {
-    json(
-      response,
-      400,
-      { status: "error", reason: "baseUrl and apiKey required" },
-      requestId,
-    );
-    return;
-  }
+  let apiKey = typeof body?.apiKey === "string" ? body.apiKey.trim() : "";
+  let savedCredential = false;
   try {
-    const endpoint = openAiModelsEndpoint(baseUrl);
-    // 公益站/自建网关可能很慢或无响应，没有超时会让请求一直挂着。
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15_000);
-    let res: Response;
-    try {
-      res = await fetch(endpoint, {
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          accept: "application/json",
-        },
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
+    if (!apiKey) {
+      const provider =
+        typeof body?.provider === "string" ? body.provider.trim() : "";
+      const accountName =
+        typeof body?.accountName === "string" ? body.accountName.trim() : "";
+      if (!provider || !accountName)
+        throw new ModelListError(
+          400,
+          "base_url_and_api_key_required",
+          "请填写 Base URL 与 API Key，或选择已保存的账号",
+        );
+      const [account] = await database.db
+        .select({ credential: providerAccounts.encryptedCredential })
+        .from(providerAccounts)
+        .where(
+          and(
+            eq(providerAccounts.provider, provider),
+            eq(providerAccounts.name, accountName),
+          ),
+        )
+        .limit(1);
+      if (!account)
+        throw new ModelListError(
+          404,
+          "provider_account_not_found",
+          "已保存的模型账号不存在，请刷新后重试",
+        );
+      const [setting] = await database.db
+        .select({ value: systemSettings.value })
+        .from(systemSettings)
+        .where(eq(systemSettings.key, providerBaseUrlSettingKey(provider)))
+        .limit(1);
+      const savedBaseUrl =
+        setting?.value ?? config.modelProviderBaseUrls?.[provider] ?? "";
+      if (!savedBaseUrl)
+        throw new ModelListError(
+          400,
+          "provider_base_url_missing",
+          "该账号尚未保存 Base URL，请先保存地址",
+        );
+      if (baseUrl && openAiApiRoot(baseUrl) !== openAiApiRoot(savedBaseUrl))
+        throw new ModelListError(
+          400,
+          "saved_provider_url_changed",
+          "Base URL 已修改；请先保存该账号，或输入新 API Key 验证新地址",
+        );
+      if (!config.credentialMasterKey)
+        throw new ModelListError(
+          503,
+          "master_key_missing",
+          "服务端缺少凭据解密配置，请检查 CREDENTIAL_MASTER_KEY",
+        );
+      try {
+        apiKey = createCredentialCipher(config.credentialMasterKey).open(
+          account.credential,
+        );
+      } catch {
+        throw new ModelListError(
+          503,
+          "saved_credential_unavailable",
+          "无法读取已保存的 API Key，请检查凭据配置或替换密钥",
+        );
+      }
+      baseUrl = savedBaseUrl;
+      savedCredential = true;
     }
-    if (!res.ok) {
-      // 上游的错误正文才是用户能据以行动的信息（密钥无效 / 余额不足 /
-      // 路径不对）。只回 httpStatus 会让用户完全无从判断。
-      const detail = (await res.text().catch(() => "")).slice(0, 300);
-      json(
-        response,
-        502,
-        {
-          status: "error",
-          reason: "models_request_failed",
-          httpStatus: res.status,
-          endpoint,
-          ...(detail ? { detail } : {}),
-        },
-        requestId,
+    if (!baseUrl)
+      throw new ModelListError(
+        400,
+        "base_url_and_api_key_required",
+        "请填写 Base URL 与 API Key",
       );
-      return;
-    }
-    const data = (await res.json()) as { data?: { id?: string }[] };
-    const models = (data.data ?? [])
-      .map((m) => m.id)
-      .filter((id): id is string => typeof id === "string")
-      .sort();
+    const models = await readProviderModels(baseUrl, apiKey, {
+      savedCredential,
+    });
     json(response, 200, { status: "ok", models }, requestId);
   } catch (error) {
-    logger.warn({ err: error }, "setup models fetch failed");
-    const aborted = error instanceof Error && error.name === "AbortError";
+    // 日志仅记稳定原因，不记录可能回显凭据的网络异常。
+    const failure =
+      error instanceof ModelListError
+        ? error
+        : new ModelListError(
+            500,
+            "models_fetch_failed",
+            "无法读取模型配置，请稍后重试",
+          );
+    logger.warn({ reason: failure.reason }, "setup models fetch failed");
     json(
       response,
-      502,
+      failure.status,
       {
         status: "error",
-        reason: aborted ? "models_fetch_timeout" : "models_fetch_failed",
-        ...(error instanceof Error && !aborted
-          ? { detail: error.message.slice(0, 200) }
-          : {}),
+        reason: failure.reason,
+        hint: failure.hint,
+        ...failure.diagnostics,
       },
       requestId,
     );

@@ -1,197 +1,123 @@
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  getSettingSpec,
-  MAX_GLOBAL_REVIEW_RULES_CHARS,
-} from "../../../../packages/config/src/settings-registry";
+import { getSettingSpec } from "../../../../packages/config/src/settings-registry";
 import { ToastProvider } from "../components/Toast";
 import { bumpCache, type SettingItem } from "../lib/api";
 import { AnalysisSettingsPage } from "../pages/AnalysisSettingsPage";
+import { RepoRulesPage } from "../pages/RepoRulesPage";
 
-const key = "review_rules_global";
-const savedRules = "# Common policy\n  - Never log credentials.\n";
-const spec = getSettingSpec(key)!;
+const savedRules = "# Existing global policy\n- Preserve this content.\n";
 const fetchMock = vi.fn<typeof fetch>();
-let current: SettingItem;
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
+const setting = (key: string, value: string): SettingItem => ({
+  ...getSettingSpec(key)!,
+  options: undefined,
+  source: "database",
+  value,
+  defaultValue: "",
+  envConfigured: false,
+  hasValue: true,
+  updatedAt: "2026-11-01T00:00:00Z",
+});
+const response = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
   });
-}
-
-function renderPage() {
-  return render(
-    <ToastProvider>
-      <AnalysisSettingsPage />
-    </ToastProvider>,
-  );
-}
 
 beforeEach(() => {
   localStorage.clear();
+  window.location.hash = "#/analysis";
   bumpCache();
-  current = {
-    ...spec,
-    options: undefined,
-    source: "database",
-    value: savedRules,
-    defaultValue: "",
-    envConfigured: false,
-    hasValue: true,
-    updatedAt: "2026-11-01T00:00:00Z",
-  };
   fetchMock.mockReset();
-  fetchMock.mockImplementation(async (_url, init) => {
-    if (init?.method === "PUT") {
-      const body = JSON.parse(String(init.body)) as {
-        key: string;
-        value: string | null;
-      };
-      current = {
-        ...current,
-        value: body.value ?? "",
-        source: body.value === null ? "default" : "database",
-        hasValue: body.value !== null && body.value.trim().length > 0,
-      };
-      return jsonResponse({ status: "ok", key: body.key });
-    }
-    return jsonResponse({ items: [current] });
+  fetchMock.mockImplementation(async (input) => {
+    const path = String(input);
+    if (path === "/repo-rules/global")
+      return response({
+        content: savedRules,
+        contentHash: "a".repeat(64),
+        updatedAt: "2026-11-01T00:00:00Z",
+        canManage: true,
+        maxChars: 16000,
+        maxBytes: 64000,
+      });
+    if (path === "/repo-rules")
+      return response({ githubConfigured: false, items: [] });
+    return response({
+      items: [
+        setting("review_rules_global", savedRules),
+        setting("repo_rules_enabled", "true"),
+        setting("issue_auto_assign", "false"),
+        setting("pr_auto_review", "true"),
+      ],
+    });
   });
   vi.stubGlobal("fetch", fetchMock);
 });
-
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
 
-describe("analysis settings global review rules", () => {
-  it("shows saved rules in an accessible bounded multiline editor", async () => {
-    renderPage();
-    const editor = await screen.findByRole("textbox", { name: "全局审核规则" });
-    expect(editor.tagName).toBe("TEXTAREA");
-    expect(editor).toHaveValue(savedRules);
-    expect(editor).toHaveAttribute(
-      "maxlength",
-      String(MAX_GLOBAL_REVIEW_RULES_CHARS),
+describe("review rules have one editing location", () => {
+  it("keeps a navigation entry in analysis settings without a duplicate rules editor", async () => {
+    render(
+      <ToastProvider>
+        <AnalysisSettingsPage />
+      </ToastProvider>,
     );
-    expect(editor).toHaveAccessibleDescription(spec.hint);
-    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    await screen.findByRole("switch", { name: "PR 自动提交 Review" });
     expect(
-      screen.getByText(/仓库规则开关只控制目录与外部链接/),
-    ).toBeInTheDocument();
-  });
-
-  it("saves exact multiline text through PUT /settings and keeps it editable after refresh", async () => {
-    renderPage();
-    const editor = await screen.findByRole("textbox", { name: "全局审核规则" });
-    const updated =
-      "  # Updated policy\n\n  - Keep indentation and trailing newline.\n";
-    fireEvent.change(editor, { target: { value: updated } });
-    await act(async () => {
-      await userEvent.click(screen.getByRole("button", { name: "保存" }));
-    });
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/settings",
-        expect.objectContaining({
-          method: "PUT",
-          body: JSON.stringify({ key, value: updated }),
-        }),
-      ),
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "保存" })).toBeDisabled(),
-    );
-    expect(screen.getByRole("textbox", { name: "全局审核规则" })).toHaveValue(
-      updated,
-    );
-    expect(current.value).toBe(updated);
-  });
-
-  it("allows saving an empty value to disable global rules", async () => {
-    renderPage();
-    const editor = await screen.findByRole("textbox", { name: "全局审核规则" });
-    await act(async () => {
-      await userEvent.clear(editor);
-    });
-    await act(async () => {
-      await userEvent.click(screen.getByRole("button", { name: "保存" }));
-    });
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/settings",
-        expect.objectContaining({
-          method: "PUT",
-          body: JSON.stringify({ key, value: "" }),
-        }),
-      ),
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "保存" })).toBeDisabled(),
-    );
-    expect(screen.getByRole("textbox", { name: "全局审核规则" })).toHaveValue(
-      "",
-    );
-  });
-
-  it("clears the override and reloads the empty default", async () => {
-    renderPage();
-    await screen.findByRole("textbox", { name: "全局审核规则" });
-    await act(async () => {
-      await userEvent.click(screen.getByRole("button", { name: "回落默认" }));
-    });
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/settings",
-        expect.objectContaining({
-          method: "PUT",
-          body: JSON.stringify({ key, value: null }),
-        }),
-      ),
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("textbox", { name: "全局审核规则" })).toHaveValue(
-        "",
-      ),
-    );
-    expect(
-      screen.queryByRole("button", { name: "回落默认" }),
+      screen.queryByRole("textbox", { name: "全局审核规则" }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "仓库审核规则" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "前往「审核规则」" }),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.every(
+        (call) => String(call[0]) !== "/repo-rules/global",
+      ),
+    ).toBe(true);
   });
 
-  it("retains the draft and displays a settings API validation error", async () => {
-    renderPage();
-    const editor = await screen.findByRole("textbox", { name: "全局审核规则" });
-    fireEvent.change(editor, { target: { value: "Unsaved policy" } });
-    fetchMock.mockImplementation(async (_url, init) =>
-      init?.method === "PUT"
-        ? jsonResponse(
-            {
-              reason: "invalid_setting_value",
-              detail: "最多允许 16000 个字符",
-            },
-            400,
-          )
-        : jsonResponse({ items: [current] }),
+  it("navigates to the rules page while retaining Issue and PR settings", async () => {
+    render(
+      <ToastProvider>
+        <AnalysisSettingsPage />
+      </ToastProvider>,
     );
-    await act(async () => {
-      await userEvent.click(screen.getByRole("button", { name: "保存" }));
-    });
+    await screen.findByRole("switch", { name: "PR 自动提交 Review" });
     expect(
-      await screen.findByText(/最多允许 16000 个字符/),
+      screen.getByRole("heading", { name: "Issue 分析" }),
     ).toBeInTheDocument();
-    expect(editor).toHaveValue("Unsaved policy");
-    expect(current.value).toBe(savedRules);
+    expect(
+      screen.getByRole("heading", { name: "PR 审查" }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "前往「审核规则」" }),
+    );
+    expect(window.location.hash).toBe("#/repo-rules");
+  });
+
+  it("shows the existing global policy even when GitHub is not configured and no repositories exist", async () => {
+    render(
+      <ToastProvider>
+        <RepoRulesPage />
+      </ToastProvider>,
+    );
+    expect(
+      await screen.findByRole("textbox", { name: "全局审核规则" }),
+    ).toHaveValue(savedRules);
+    expect(await screen.findByText("GitHub App 尚未配置")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存全局规则" })).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "仓库审核规则" }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/旧的全局规则会继续沿用/)).toBeInTheDocument();
   });
 });
