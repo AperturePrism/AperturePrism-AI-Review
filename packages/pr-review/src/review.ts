@@ -69,7 +69,7 @@ export type PrReviewOutcome =
       candidate: ModelCandidate;
       attempts: readonly ModelAttemptOutcome[];
       durationMs: number;
-      /** 主审查阶段的最终对话（供增量续跑持久化）。 */
+      /** 完整审查对话，包含工具结果与契约修复（供增量续跑持久化）。 */
       messages?: readonly ModelMessage[];
     }
   | {
@@ -140,6 +140,7 @@ export async function reviewPullRequest(
     : baseMessages;
 
   let mainContent: string;
+  let finalMessages: readonly ModelMessage[];
   if (options.tools) {
     const loop = await runToolLoop(invoke, messages, options.tools.context, {
       tools: builtinTools(),
@@ -156,18 +157,15 @@ export async function reviewPullRequest(
         : { maxRounds: options.tools.maxRounds }),
     });
     mainContent = loop.messages[loop.messages.length - 1]!.content;
+    finalMessages = loop.messages;
   } else {
     const request = buildPrReviewRequest(context, mode, options.promptVersion);
     const main = await invoke(
       options.history ? { ...request, messages } : request,
     );
     mainContent = main.content;
+    finalMessages = [...messages, { role: "assistant", content: mainContent }];
   }
-
-  const finalMessages: readonly ModelMessage[] = [
-    ...messages,
-    { role: "assistant", content: mainContent },
-  ];
 
   const validation = parsePrReviewJson(mainContent);
   if (validation.outcome === "valid") {
@@ -192,15 +190,16 @@ export async function reviewPullRequest(
   }
 
   const remainingMs = Math.max(0, options.deadlineMs - (now() - startedAt));
+  const repairRequest = buildPrReviewRepairRequest(
+    context,
+    mainContent,
+    validation.issues,
+    mode,
+    options.promptVersion,
+  );
   const repair = await routeModelInvocation(options.adapters, {
     candidates: options.candidates,
-    request: buildPrReviewRepairRequest(
-      context,
-      mainContent,
-      validation.issues,
-      mode,
-      options.promptVersion,
-    ),
+    request: repairRequest,
     deadlineMs: remainingMs,
     retryPolicy: options.retryPolicy,
     stickyCandidate: sticky,
@@ -213,6 +212,11 @@ export async function reviewPullRequest(
 
   const repaired = parsePrReviewJson(repair.response.content);
   const usage = totalUsageValue();
+  const repairedMessages: readonly ModelMessage[] = [
+    ...finalMessages,
+    ...repairRequest.messages.filter((message) => message.role !== "system"),
+    { role: "assistant", content: repair.response.content },
+  ];
 
   if (repaired.outcome === "valid") {
     return {
@@ -231,10 +235,7 @@ export async function reviewPullRequest(
       candidate: repair.candidate,
       attempts,
       durationMs: now() - startedAt,
-      messages: [
-        ...finalMessages,
-        { role: "assistant", content: repair.response.content },
-      ],
+      messages: repairedMessages,
     };
   }
   return {
@@ -242,6 +243,6 @@ export async function reviewPullRequest(
     usage,
     attempts,
     durationMs: now() - startedAt,
-    messages: finalMessages,
+    messages: repairedMessages,
   };
 }
