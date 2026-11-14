@@ -10,7 +10,6 @@
  * 批次租约只负责“谁在协调这一项”，真正的模型执行仍由 analysis_tasks 的租约
  * 负责。稳定去重键不包含租约尝试次数，进程重启不会重复派发仍在执行的审查。
  */
-import { createHash } from "node:crypto";
 import { asc, eq, isNotNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../../packages/database/src/client.js";
 import {
@@ -245,14 +244,20 @@ export function parseBatchSubject(
   return { ...parsed, expectedRevision };
 }
 
-/** 明确重跑使用新一代任务；租约到期和进程重启仍使用同一代去重键。 */
-export function workbenchBatchTaskKey(
-  batch: Pick<Batch, "id">,
-  item: Pick<BatchItem, "id"> & { generation?: number },
-): string {
-  return `workbench-batch:${createHash("sha256")
-    .update(JSON.stringify([batch.id, item.id, item.generation ?? 0]))
-    .digest("hex")}`;
+/**
+ * 跨批次去重：同一仓库、审查对象、版本与策略只对应一个真实任务；
+ * 批次关联记录在任务 payload 的 metadata 中，不参与去重键。
+ */
+export function workbenchTaskDedupeKey(input: {
+  repositoryId: string;
+  taskType: "issue_analysis" | "pr_review";
+  number: number;
+  revision: string;
+  policyVersion: string;
+}): string {
+  const prefix =
+    input.taskType === "pr_review" ? "pr-review" : "issue-analysis";
+  return `${prefix}:${input.repositoryId}:${input.number}:${input.revision}:${input.policyVersion}`;
 }
 
 function taskPayload(task: BatchAnalysisTask): Record<string, unknown> {
@@ -407,12 +412,14 @@ export function createWorkbenchBatchDispatcher(options: {
     return outcome;
   };
 
-  const createTask = async (
+  const resolveRevision = async (
     repository: BatchRepository,
-    batch: Batch,
     item: BatchItem,
-    dedupeKey: string,
-  ): Promise<BatchAnalysisTask> => {
+  ): Promise<{
+    parsed: BatchSubject;
+    revision: string;
+    policyVersion: string;
+  }> => {
     const parsed = parseBatchSubject(
       repository.fullName,
       item.subject,
@@ -463,6 +470,25 @@ export function createWorkbenchBatchDispatcher(options: {
           "审查对象已不在批次指定版本，请确认后新建或重试批次",
         );
     }
+    return {
+      parsed,
+      revision,
+      policyVersion:
+        parsed.taskType === "pr_review"
+          ? PR_REVIEW_POLICY_VERSION
+          : ISSUE_ANALYSIS_POLICY_VERSION,
+    };
+  };
+
+  const createTask = async (
+    repository: BatchRepository,
+    batch: Batch,
+    item: BatchItem,
+    parsed: BatchSubject,
+    revision: string,
+    policyVersion: string,
+    dedupeKey: string,
+  ): Promise<BatchAnalysisTask> => {
     // 外部读取可能很慢；提交真实任务前再次检查磁盘租约，取消后不会继续派发。
     await heartbeat({
       repository: repository.fullName,
@@ -489,10 +515,7 @@ export function createWorkbenchBatchDispatcher(options: {
       repositoryId: repository.id,
       subjectNumber: parsed.number,
       subjectRevision: revision,
-      policyVersion:
-        parsed.taskType === "pr_review"
-          ? PR_REVIEW_POLICY_VERSION
-          : ISSUE_ANALYSIS_POLICY_VERSION,
+      policyVersion,
       dedupeKey,
       payload,
     });
@@ -520,26 +543,40 @@ export function createWorkbenchBatchDispatcher(options: {
     remember(lease);
     try {
       await heartbeat(lease);
-      const key = workbenchBatchTaskKey(batch, item);
+      // 版本需要在建立任务去重键前从 GitHub 读取；跨批次共享同一真实任务。
+      const { parsed, revision, policyVersion } = await resolveRevision(
+        repository,
+        item,
+      );
+      const key = workbenchTaskDedupeKey({
+        repositoryId: repository.id,
+        taskType: parsed.taskType,
+        number: parsed.number,
+        revision,
+        policyVersion,
+      });
       let task = await tasks.find(key);
       if (task) {
         const payload = taskPayload(task);
         if (
           task.repositoryId !== repository.id ||
-          payload.workbenchBatchId !== batch.id ||
-          payload.workbenchItemId !== item.id
+          payload.subjectNumber !== parsed.number ||
+          payload.subjectRevision !== revision
         )
           throw new BatchDispatchError(
             "task_identity_conflict",
             "批次关联的任务身份与已安装仓库不符",
           );
+        // 同一任务可能已由其它批次或 webhook 创建；批次关联只记录在 metadata。
         const previousAttempt =
           typeof item.result?.dispatchAttempt === "number"
             ? item.result.dispatchAttempt
-            : Number(payload.workbenchDispatchAttempt ?? 1);
+            : 1;
+        const generation = item.generation ?? 0;
+        const recordedGeneration = Number(payload.workbenchGeneration ?? 0);
         if (
           ["failed", "canceled"].includes(task.status) &&
-          previousAttempt < item.attempts
+          (previousAttempt < item.attempts || generation > recordedGeneration)
         ) {
           if (await tasks.retry(task.id)) {
             summary.resumed += 1;
@@ -547,7 +584,15 @@ export function createWorkbenchBatchDispatcher(options: {
           } else task = (await tasks.find(key)) ?? task;
         }
       } else {
-        task = await createTask(repository, batch, item, key);
+        task = await createTask(
+          repository,
+          batch,
+          item,
+          parsed,
+          revision,
+          policyVersion,
+          key,
+        );
         summary.dispatched += 1;
       }
       await execute(repository.fullName, "batches.link", {

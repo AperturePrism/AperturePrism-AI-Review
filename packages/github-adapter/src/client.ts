@@ -595,8 +595,17 @@ function retryAfterMs(headers: Headers): number | undefined {
 function categorizeStatus(
   status: number,
   retryAfter: number | undefined,
+  rateLimitRemaining: string | null,
 ): GitHubApiError {
   if (status === 429)
+    return new GitHubApiError(
+      "rate_limited",
+      `GitHub responded with ${status}`,
+      status,
+      retryAfter,
+    );
+  // GitHub 二级限流通常返回 403 并带 Retry-After 或耗尽额度；与权限失败区分。
+  if (status === 403 && (retryAfter !== undefined || rateLimitRemaining === "0"))
     return new GitHubApiError(
       "rate_limited",
       `GitHub responded with ${status}`,
@@ -670,7 +679,11 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
     }
 
     if (!response.ok) {
-      throw categorizeStatus(response.status, retryAfterMs(response.headers));
+      throw categorizeStatus(
+        response.status,
+        retryAfterMs(response.headers),
+        response.headers.get("x-ratelimit-remaining"),
+      );
     }
     if (init.rawText) return (await response.text()) as T;
     if (response.status === 204) return null as T;

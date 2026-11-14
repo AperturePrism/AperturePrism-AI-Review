@@ -97,10 +97,12 @@ beforeEach(() => {
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
+  vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("检查通过自动合并：页面到真实 API 绑定", () => {
@@ -184,6 +186,28 @@ describe("检查通过自动合并：页面到真实 API 绑定", () => {
     expect(
       screen.getByRole("textbox", { name: "必须通过的检查名称" }),
     ).toHaveValue("CI (node, linux)\nunit tests");
+  });
+
+  it("开启自动合并需要二次确认，取消则保持关闭", async () => {
+    const user = userEvent.setup();
+    mountPanel();
+    const enabled = await screen.findByRole("checkbox", {
+      name: "在本仓库开启检查通过自动合并",
+    });
+    vi.mocked(window.confirm).mockReturnValueOnce(false);
+    await user.click(enabled);
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("将自动合并所有通过门禁的 PR"),
+    );
+    expect(enabled).not.toBeChecked();
+    vi.mocked(window.confirm).mockReturnValueOnce(true);
+    await user.click(enabled);
+    expect(enabled).toBeChecked();
+    await user.click(enabled);
+    expect(window.confirm).toHaveBeenLastCalledWith(
+      expect.stringContaining("确定要关闭吗"),
+    );
+    expect(enabled).not.toBeChecked();
   });
 
   it("只有查看权限时可读全部执行状态，但没有保存操作", async () => {

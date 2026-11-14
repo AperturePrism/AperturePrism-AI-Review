@@ -49,11 +49,37 @@ export type AutoMergeDecision = {
   message: string;
 };
 const activeStatuses = ["pending", "waiting", "blocked"] as const;
-const retryMs = 30_000;
+const retryBaseMs = 30_000;
+const retryMaxMs = 10 * 60_000;
+const maxAttempts = 40;
+const exhaustedReason = "retry_exhausted";
 const requestTimeoutMs = 20_000;
 const batchSize = 20;
 const recoveryTopic = "review.auto_merge_recovery";
 const recoveryRetryMs = 60_000;
+
+/** 指数退避：30s 起翻倍，封顶 10 分钟。 */
+export function autoMergeRetryDelayMs(attempt: number): number {
+  const exponent = Math.max(0, attempt - 1);
+  return Math.min(retryMaxMs, retryBaseMs * 2 ** Math.min(exponent, 30));
+}
+
+/** 429/403 二级限流携带 Retry-After 时按该值等待。 */
+function rateLimitDelayMs(error: unknown): number | undefined {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "retryAfterMs" in error &&
+    typeof (error as { retryAfterMs?: unknown }).retryAfterMs === "number" &&
+    Number.isFinite((error as { retryAfterMs: number }).retryAfterMs) &&
+    (error as { retryAfterMs: number }).retryAfterMs >= 0
+  )
+    return Math.min(
+      retryMaxMs,
+      (error as { retryAfterMs: number }).retryAfterMs,
+    );
+  return undefined;
+}
 
 /** journal 使用独立连接提交；即使连接池繁忙也不能无限等待，更不能未记账就外发。 */
 async function beforeDeadline<T>(
@@ -87,6 +113,8 @@ export function autoMergeReviewDecision(
   return null;
 }
 
+const passingConclusions = new Set(["success", "neutral", "skipped"]);
+
 /** 不把空列表、跳过、中性或缺失的必需检查当成成功。 */
 export function autoMergeChecksDecision(
   checks: readonly Check[],
@@ -106,8 +134,11 @@ export function autoMergeChecksDecision(
       reason: "required_checks_missing",
       message: `等待必需检查：${missing.join("、").slice(0, 1000)}`,
     };
+  // GitHub 语义：required checks 的 neutral/skipped 视为通过；仅明确失败才阻塞。
   const failed = checks.filter(
-    (check) => check.status === "completed" && check.conclusion !== "success",
+    (check) =>
+      check.status === "completed" &&
+      !passingConclusions.has(String(check.conclusion)),
   );
   if (failed.length)
     return {
@@ -182,6 +213,7 @@ export async function reconcilePullRequestAutoMerges(input: {
       or(
         and(
           inArray(pullRequestAutoMerges.status, [...activeStatuses]),
+          ne(pullRequestAutoMerges.reason, exhaustedReason),
           lte(pullRequestAutoMerges.nextAttemptAt, now()),
         ),
         and(
@@ -249,16 +281,34 @@ export async function reconcilePullRequestAutoMerges(input: {
           AbortSignal.timeout(requestTimeoutMs),
         ]);
         let mergeMethod = request.method;
-        const save = async (decision: AutoMergeDecision) => {
+        const save = async (
+          decision: AutoMergeDecision,
+          retryAfter?: number,
+        ) => {
           const timestamp = now();
+          const attempt = request.attempts + 1;
+          const retryable =
+            decision.status === "waiting" || decision.status === "blocked";
+          // 只对仍在等待/重试的请求计数；合并、取消等终态不再占用重试额度。
+          const exhausted = retryable && attempt >= maxAttempts;
+          const effective = exhausted
+            ? {
+                status: "blocked" as const,
+                reason: exhaustedReason,
+                message: `重试 ${attempt} 次后仍未满足条件（最后原因：${decision.reason}），已停止自动重试，请人工检查`,
+              }
+            : decision;
+          const delay = exhausted
+            ? 0
+            : (retryAfter ?? autoMergeRetryDelayMs(attempt));
           await tx
             .update(pullRequestAutoMerges)
             .set({
-              ...decision,
+              ...effective,
               attempts: sql`${pullRequestAutoMerges.attempts} + 1`,
               updatedAt: timestamp,
-              nextAttemptAt: new Date(timestamp.getTime() + retryMs),
-              completedAt: decision.status === "canceled" ? timestamp : null,
+              nextAttemptAt: new Date(timestamp.getTime() + delay),
+              completedAt: effective.status === "canceled" ? timestamp : null,
             })
             .where(eq(pullRequestAutoMerges.id, requestId));
           if (recovery)
@@ -618,13 +668,17 @@ export async function reconcilePullRequestAutoMerges(input: {
           return true;
         } catch (error) {
           input.onError(error, request.id);
-          return save({
-            status: active ? "waiting" : "canceled",
-            reason: active ? "github_error" : "recovery_pending",
-            message: active
-              ? "检查或合并请求暂时失败，将自动重试；未绕过任何检查"
-              : "自动合并已取消，仅重试只读确认此前请求的结果",
-          });
+          const retryAfter = rateLimitDelayMs(error);
+          return save(
+            {
+              status: active ? "waiting" : "canceled",
+              reason: active ? "github_error" : "recovery_pending",
+              message: active
+                ? "检查或合并请求暂时失败，将自动重试；未绕过任何检查"
+                : "自动合并已取消，仅重试只读确认此前请求的结果",
+            },
+            retryAfter,
+          );
         }
         async function finishMerged(
           sha: string | null,

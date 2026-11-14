@@ -538,4 +538,48 @@ integration("automatic pull request merge PostgreSQL fencing", () => {
       await Promise.all([single.close(), journal.close()]);
     }
   });
+  it("stops polling after the retry limit and records retry_exhausted", async () => {
+    const seeded = await seed();
+    const github = remote();
+    github.getCommitChecks.mockResolvedValue({
+      checks: [
+        {
+          name: "tests",
+          status: "in_progress",
+          conclusion: null,
+          source: "check_run",
+        },
+      ],
+    });
+    await client.sql`update pull_request_auto_merges set attempts=39,status='waiting',reason='checks_pending',next_attempt_at=now()-interval '1 second' where id=${seeded.requestId}`;
+    expect(await run(github)).toBe(0);
+    expect(await row(seeded.requestId)).toMatchObject({
+      status: "blocked",
+      reason: "retry_exhausted",
+      attempts: 40,
+    });
+    const calls = github.getCommitChecks.mock.calls.length;
+    await due(seeded.requestId);
+    expect(await run(github)).toBe(0);
+    expect(github.getCommitChecks).toHaveBeenCalledTimes(calls);
+  });
+  it("honors retryAfterMs from a rate-limited GitHub error", async () => {
+    const seeded = await seed();
+    const github = remote();
+    github.getCommitChecks.mockRejectedValueOnce(
+      Object.assign(new Error("secondary rate limit"), {
+        retryAfterMs: 120_000,
+      }),
+    );
+    await run(github);
+    const [request] =
+      await client.sql`select status,reason,next_attempt_at from pull_request_auto_merges where id=${seeded.requestId}`;
+    expect(request).toMatchObject({
+      status: "waiting",
+      reason: "github_error",
+    });
+    const delay = new Date(request!.next_attempt_at).getTime() - Date.now();
+    expect(delay).toBeGreaterThan(110_000);
+    expect(delay).toBeLessThan(130_000);
+  });
 });

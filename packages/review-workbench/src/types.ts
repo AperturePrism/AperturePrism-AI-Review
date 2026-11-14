@@ -146,6 +146,8 @@ export interface Batch extends RecordIdentity {
   concurrency: number;
   items: BatchItem[];
   note: string;
+  /** 同一仓库内重复提交相同键时返回已有批次，避免网络重试重复建批次。 */
+  idempotencyKey?: string;
 }
 
 export interface Feedback extends RecordIdentity {

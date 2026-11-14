@@ -58,6 +58,7 @@ const REASONS: Record<string, string> = {
   changes_requested: "有尚未解决的修改请求",
   draft: "PR 仍为草稿",
   merge_conflict: "存在合并冲突",
+  retry_exhausted: "自动重试次数已用尽，请人工检查",
   branch_protection: "等待分支保护条件满足",
   waiting_task: "等待审查任务完成",
   review_superseded: "已有更新的审查任务",
@@ -254,7 +255,15 @@ export function AutoMergePanel({
                 type="checkbox"
                 checked={settings.enabled}
                 onChange={(event) => {
-                  setSettings({ ...settings, enabled: event.target.checked });
+                  const next = event.target.checked;
+                  // 自动合并会直接写入远端分支，开启和关闭都要求二次确认。
+                  const confirmed = window.confirm(
+                    next
+                      ? `将自动合并所有通过门禁的 PR。确定要为 ${repo.fullName} 开启检查通过自动合并吗？`
+                      : `关闭后，${repo.fullName} 的 PR 不再自动合并。确定要关闭吗？`,
+                  );
+                  if (!confirmed) return;
+                  setSettings({ ...settings, enabled: next });
                   setNotice(null);
                 }}
               />

@@ -41,6 +41,29 @@ describe("批次执行计划与租约", () => {
     ).rejects.toMatchObject({ code: "duplicate_item" });
   });
 
+  it("同一仓库与幂等键重复创建时返回已有批次", async () => {
+    const { call } = await makeHarness();
+    const first = await call<Batch>("batches.create", {
+      name: "幂等",
+      idempotencyKey: "retry-1",
+      items: [{ subject: "pr:1", reference: "sha" }],
+    });
+    const second = await call<Batch>("batches.create", {
+      name: "另一个名字",
+      idempotencyKey: "retry-1",
+      items: [{ subject: "pr:2", reference: "sha" }],
+    });
+    expect(second.id).toBe(first.id);
+    expect(await call("batches.list")).toMatchObject({ total: 1 });
+    await expect(
+      call("batches.create", {
+        name: "过长",
+        idempotencyKey: "x".repeat(201),
+        items: [{ subject: "pr:1", reference: "sha" }],
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+  });
+
   it("只有依赖成功后才领取下游，并遵守并发限制", async () => {
     const { call } = await makeHarness();
     const batch = await call<Batch>("batches.create", {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   autoMergeChecksDecision,
+  autoMergeRetryDelayMs,
   autoMergeReviewsDecision,
 } from "./auto-merge.js";
 
@@ -21,12 +22,24 @@ describe("automatic merge check policy", () => {
     );
     expect(autoMergeChecksDecision([success], ["tests"])).toBeNull();
   });
-  it.each(["failure", "timed_out", "cancelled", "neutral", "skipped", null])(
-    "does not accept %s as passing",
+  it.each([
+    "failure",
+    "timed_out",
+    "cancelled",
+    "action_required",
+    "stale",
+    null,
+  ])("does not accept %s as passing", (conclusion) => {
+    expect(
+      autoMergeChecksDecision([{ ...success, conclusion }], [])?.reason,
+    ).toBe("checks_failed");
+  });
+  it.each(["success", "neutral", "skipped"])(
+    "treats required check conclusion %s as passing",
     (conclusion) => {
       expect(
-        autoMergeChecksDecision([{ ...success, conclusion }], [])?.reason,
-      ).toBe("checks_failed");
+        autoMergeChecksDecision([{ ...success, conclusion }], []),
+      ).toBeNull();
     },
   );
   it("waits for in-progress work and does not let duplicate names mask a failing app", () => {
@@ -42,6 +55,18 @@ describe("automatic merge check policy", () => {
         [],
       )?.reason,
     ).toBe("checks_failed");
+  });
+});
+
+describe("自动合并重试退避", () => {
+  it("从 30 秒开始翻倍并封顶 10 分钟", () => {
+    expect(autoMergeRetryDelayMs(1)).toBe(30_000);
+    expect(autoMergeRetryDelayMs(2)).toBe(60_000);
+    expect(autoMergeRetryDelayMs(3)).toBe(120_000);
+    expect(autoMergeRetryDelayMs(4)).toBe(240_000);
+    expect(autoMergeRetryDelayMs(5)).toBe(480_000);
+    expect(autoMergeRetryDelayMs(6)).toBe(600_000);
+    expect(autoMergeRetryDelayMs(40)).toBe(600_000);
   });
 });
 
