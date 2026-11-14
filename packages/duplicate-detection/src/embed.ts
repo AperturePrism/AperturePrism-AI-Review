@@ -49,14 +49,46 @@ export async function embedTexts(
     );
   }
   const body = (await response.json()) as {
-    data?: { embedding?: number[] }[];
+    data?: { embedding?: number[]; index?: number }[];
     usage?: { prompt_tokens?: number; total_tokens?: number };
   };
-  const vectors = (body.data ?? []).map((item) => item.embedding ?? []);
-  if (vectors.some((v) => v.length !== EMBEDDING_DIMENSION)) {
-    throw new EmbeddingError(
-      `embedding dimension mismatch (expected ${EMBEDDING_DIMENSION})`,
-    );
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !Array.isArray(body.data) ||
+    body.data.length !== input.texts.length
+  ) {
+    throw new EmbeddingError("embedding count mismatch with input texts");
+  }
+  const vectors: number[][] = Array.from({ length: input.texts.length });
+  const hasIndexes = body.data.some((item) => item?.index !== undefined);
+  const seen = new Set<number>();
+  for (const [position, item] of body.data.entries()) {
+    const index = hasIndexes ? item?.index : position;
+    if (
+      index === undefined ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= input.texts.length ||
+      seen.has(index)
+    ) {
+      throw new EmbeddingError("invalid embedding index in provider response");
+    }
+    const embedding = item?.embedding;
+    if (!Array.isArray(embedding) || embedding.length !== EMBEDDING_DIMENSION) {
+      throw new EmbeddingError(
+        `embedding dimension mismatch (expected ${EMBEDDING_DIMENSION})`,
+      );
+    }
+    if (
+      !embedding.every(
+        (value) => typeof value === "number" && Number.isFinite(value),
+      )
+    ) {
+      throw new EmbeddingError("embedding components must be finite numbers");
+    }
+    seen.add(index);
+    vectors[index] = embedding;
   }
   return {
     vectors,
