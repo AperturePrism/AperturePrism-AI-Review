@@ -51,7 +51,7 @@ export type IssueContextBudget = {
   maxTokens: number;
   /** Character ceiling for a single oversized body. */
   maxBodyChars: number;
-  /** Newest comments to consider, oldest beyond this are dropped. */
+  /** Newest comments to consider; zero omits all comments. */
   maxComments: number;
 };
 
@@ -98,7 +98,8 @@ export async function buildIssueContext(
 
   const degraded: string[] = [];
   let body = issue.body;
-  let comments = allComments.slice(-budget.maxComments);
+  let comments =
+    budget.maxComments > 0 ? allComments.slice(-budget.maxComments) : [];
 
   const baseTokens = estimateTokens(issue.title) + estimateTokens(body);
   const commentTokens = comments.reduce(
