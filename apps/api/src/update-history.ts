@@ -8,6 +8,9 @@ const HISTORY_LIMIT = 50;
 const PENDING_TIMEOUT_MS = 3 * 60_000;
 const RUNNING_TIMEOUT_MS = 30 * 60_000;
 const VERSION_PATTERN = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?![\s\S])/;
+/** 展示用：允许 -beta/-rc 与 +build 后缀，更新目标仍走严格正式版校验。 */
+const VERSION_LABEL_PATTERN =
+  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 type UpdateDatabase = PostgresJsDatabase<typeof schema>;
 
@@ -24,6 +27,13 @@ export interface UpdateHistoryEntry {
 
 export function normalizeUpdateVersion(version: string): string | null {
   return VERSION_PATTERN.test(version) ? version.replace(/^v/, "") : null;
+}
+
+/** 运行时版本展示（当前部署版本），允许预发布后缀。 */
+export function normalizeVersionLabel(version: string): string | null {
+  const trimmed = version.trim();
+  if (!VERSION_LABEL_PATTERN.test(trimmed)) return null;
+  return trimmed.replace(/^v/, "").replace(/\+.*$/, "");
 }
 
 /** Only the newest attempt is current; never reinterpret bool-only history. */

@@ -233,6 +233,10 @@ describe("currentVersion", () => {
     vi.stubEnv("IMAGE_TAG", "stable");
     expect(api.currentVersion()).toBe("unknown");
   });
+  it("reports a prerelease runtime instead of unknown", () => {
+    vi.mocked(readFileSync).mockReturnValue('{"version":"1.3.0-beta"}');
+    expect(api.currentVersion()).toBe("v1.3.0-beta");
+  });
 });
 
 describe("history reconciliation", () => {
@@ -419,6 +423,37 @@ describe("GET /update/status", () => {
     const res = makeResponse();
     await api.handleUpdateStatus(res.response, "request-1", historyDatabase().db);
     expect(res.json().updateAvailable).toBe(false);
+  });
+  it("reports a prerelease runtime with authoritative registry metadata", async () => {
+    vi.mocked(readFileSync).mockReturnValue('{"version":"1.3.0-beta"}');
+    mockRegistry({ tags: ["v1.2.17"] });
+    const res = makeResponse();
+    await api.handleUpdateStatus(res.response, "request-1", historyDatabase().db);
+    expect(res.status()).toBe(200);
+    expect(res.json()).toMatchObject({
+      current: { version: "v1.3.0-beta" },
+      latest: { version: "v1.2.17" },
+      updateAvailable: false,
+    });
+  });
+  it("offers the finished release over an older prerelease", async () => {
+    vi.mocked(readFileSync).mockReturnValue('{"version":"1.3.0-beta"}');
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/token") return Response.json({ token: "test-token" });
+      if (url.pathname.endsWith("/tags/list")) return Response.json({ tags: ["v1.3.0"] });
+      if (url.pathname.includes("/manifests/")) {
+        return new Response(null, {
+          headers: {
+            "docker-content-digest": url.pathname.includes("beta") ? "sha256:old" : "sha256:new",
+          },
+        });
+      }
+      throw new Error(`Unexpected registry URL: ${url}`);
+    }));
+    const res = makeResponse();
+    await api.handleUpdateStatus(res.response, "request-1", historyDatabase().db);
+    expect(res.json()).toMatchObject({ updateAvailable: true });
   });
   it("reports durable pending across restart even during registry failure", async () => {
     const res = makeResponse();

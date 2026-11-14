@@ -24,7 +24,8 @@ interface UpdateAttempt {
 const POLL_INTERVAL_MS = 3_000;
 const VERIFY_TIMEOUT_MS = 3 * 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-const VERSION_TAG = /^v?\d+\.\d+\.\d+$/;
+// 允许 -beta/-rc 预发布后缀，否则灰度版本会被当成未知版本。
+const VERSION_TAG = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const version = (value: string | null | undefined) =>
   value && VERSION_TAG.test(value) ? value.replace(/^v/, "") : null;
 const entryKey = (entry: UpdateHistoryEntry) =>

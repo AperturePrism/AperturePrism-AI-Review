@@ -9,6 +9,7 @@ import { serializeSseEvent } from "../../../packages/event-stream/src/index.js";
 import {
   finishUpdate,
   normalizeUpdateVersion,
+  normalizeVersionLabel,
   readUpdateHistory,
   reserveUpdate,
   type UpdateHistoryEntry,
@@ -56,7 +57,8 @@ function packageVersion(): string {
     const pkg = JSON.parse(
       readFileSync(resolve(process.cwd(), "package.json"), "utf8"),
     ) as { version?: unknown };
-    const version = typeof pkg.version === "string" ? normalizeUpdateVersion(pkg.version) : null;
+    const version =
+      typeof pkg.version === "string" ? normalizeVersionLabel(pkg.version) : null;
     cachedPackageVersion = version === null ? "unknown" : `v${version}`;
   } catch {
     cachedPackageVersion = "unknown";
@@ -70,7 +72,7 @@ export function currentVersion(): string {
   if (baked !== "unknown") return baked;
   for (const value of [process.env.UPDATE_VERSION, process.env.IMAGE_TAG]) {
     const trimmed = value?.trim() ?? "";
-    if (normalizeUpdateVersion(trimmed) !== null) return trimmed;
+    if (normalizeVersionLabel(trimmed) !== null) return trimmed;
   }
   return "unknown";
 }
@@ -157,13 +159,47 @@ async function reachableHost(): Promise<string> {
   throw new Error("all registries unreachable");
 }
 
+/** 解析 semver 主版本与预发布标识，预发布部分按 semver 规则逐段比较。 */
+function parseVersion(value: string): { core: bigint[]; pre: string[] } {
+  const clean = value.replace(/^v/, "").replace(/\+.*$/, "");
+  const dash = clean.indexOf("-");
+  const core = dash === -1 ? clean : clean.slice(0, dash);
+  const pre = dash === -1 ? "" : clean.slice(dash + 1);
+  return {
+    core: core.split(".").map((part) => BigInt(part || "0")),
+    pre: pre ? pre.split(".") : [],
+  };
+}
+
 function compareVersion(a: string, b: string): number {
-  const pa = a.replace(/^v/, "").split(".").map(BigInt);
-  const pb = b.replace(/^v/, "").split(".").map(BigInt);
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
   for (let i = 0; i < 3; i += 1) {
-    const da = pa[i] ?? 0n;
-    const db = pb[i] ?? 0n;
+    const da = pa.core[i] ?? 0n;
+    const db = pb.core[i] ?? 0n;
     if (da !== db) return da > db ? 1 : -1;
+  }
+  // 正式版优先于同号预发布版（1.3.0 > 1.3.0-beta）。
+  if (pa.pre.length === 0 && pb.pre.length === 0) return 0;
+  if (pa.pre.length === 0) return 1;
+  if (pb.pre.length === 0) return -1;
+  const length = Math.max(pa.pre.length, pb.pre.length);
+  for (let i = 0; i < length; i += 1) {
+    const ia = pa.pre[i];
+    const ib = pb.pre[i];
+    if (ia === undefined) return -1;
+    if (ib === undefined) return 1;
+    const na = /^\d+$/.test(ia) ? BigInt(ia) : null;
+    const nb = /^\d+$/.test(ib) ? BigInt(ib) : null;
+    if (na !== null && nb !== null) {
+      if (na !== nb) return na > nb ? 1 : -1;
+    } else if (na !== null) {
+      return -1;
+    } else if (nb !== null) {
+      return 1;
+    } else if (ia !== ib) {
+      return ia > ib ? 1 : -1;
+    }
   }
   return 0;
 }
@@ -215,9 +251,13 @@ export async function handleUpdateStatus(
     const latestTag = tags[0];
     const latestDigest = latestTag ? await registryDigest(host, "web", latestTag) : null;
     const currentDigest =
-      current !== "unknown" ? await registryDigest(host, "web", current) : null;
+      current !== "unknown"
+        ? ((await registryDigest(host, "web", current)) ??
+          // 预发布镜像可能只以去掉 v 前缀的形式存在，回退再探测一次。
+          (current.startsWith("v") ? await registryDigest(host, "web", current.slice(1)) : null))
+        : null;
     let updateAvailable: boolean | null = null;
-    if (primary && latestTag && normalizeUpdateVersion(current) !== null) {
+    if (primary && latestTag && normalizeVersionLabel(current) !== null) {
       if (compareVersion(latestTag, current) <= 0) updateAvailable = false;
       else if (latestDigest && currentDigest) updateAvailable = latestDigest !== currentDigest;
     }
