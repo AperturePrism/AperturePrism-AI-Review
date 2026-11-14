@@ -1,3 +1,9 @@
+import { GridIcon as PageIcon } from "../components/icons";
+import type { ConsolePage } from "../lib/navigation";
+
+/** 本页的位置与入口同处维护；导航由页面目录自动读取。 */
+export const consolePages: ConsolePage[] = [{ path: "/", label: "仪表盘", group: "home", order: 0, icon: PageIcon, render: ({ sse }) => <Overview sse={sse} /> }];
+
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { bumpCache, fetchHealth, fetchSummary, STATUS_ORDER, type ReadyHealth, type Summary } from "../lib/api";
 import type { SseState } from "../hooks/useSse";

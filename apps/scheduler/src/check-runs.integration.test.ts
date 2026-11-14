@@ -39,7 +39,7 @@ integration("Check Run reconciliation PostgreSQL fencing", () => {
       subjectRevision: id,
     };
     await client.sql`insert into analysis_tasks (id,task_type,subject_revision,policy_version,dedupe_key,status,payload)
-      values (${id},'pr_review',${id},'test',${id},'canceled',${client.sql.json(payload)})`;
+      values (${id},'pr_review',${id},'test',${id},'canceled',${JSON.stringify(payload)}::jsonb)`;
     await client.sql`insert into external_publications (task_id,idempotency_key,external_object_id,channel)
       values (${id},${id},'101','check_run')`;
     return id;

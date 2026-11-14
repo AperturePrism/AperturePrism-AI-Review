@@ -173,8 +173,7 @@ describe("issue analysis orchestration", () => {
       ...context,
       issue: {
         ...context.issue,
-        body:
-          "https://github.com/other/plugin/issues/17\n让bot找代码中的bug时，未说出任何bug",
+        body: "https://github.com/other/plugin/issues/17\n让bot找代码中的bug时，未说出任何bug",
       },
     };
     // main 与 repair 都是自由格式缺陷清单，无法通过 JSON 契约。
@@ -222,8 +221,7 @@ describe("issue analysis orchestration", () => {
       ...context,
       issue: {
         ...context.issue,
-        body:
-          "https://github.com/other/plugin/issues/3\n帮我检查 main.py 的 bug",
+        body: "https://github.com/other/plugin/issues/3\n帮我检查 main.py 的 bug",
       },
     };
     const { adapter, calls } = scriptedAdapter("provider-a", [
@@ -398,7 +396,9 @@ describe("结果区块后置过滤", () => {
     });
 
     // 开启 suggested_assignee 时保留值
-    const { adapter: adapterOn } = scriptedAdapter("provider-a", [richWithAssignee]);
+    const { adapter: adapterOn } = scriptedAdapter("provider-a", [
+      richWithAssignee,
+    ]);
     const sectionsOn = new Set<IssueResultSection>([
       "summary",
       "suggested_assignee",
@@ -412,7 +412,9 @@ describe("结果区块后置过滤", () => {
     expect(outcomeOn.analysis.result.suggestedAssignee).toBe("bb0813");
 
     // 关闭 suggested_assignee 时整个字段被移除（undefined）
-    const { adapter: adapterOff } = scriptedAdapter("provider-a", [richWithAssignee]);
+    const { adapter: adapterOff } = scriptedAdapter("provider-a", [
+      richWithAssignee,
+    ]);
     const sectionsOff = new Set<IssueResultSection>(["summary"]);
     const outcomeOff = await analyzeIssue(
       { ...options([adapterOff], [candidate]), sections: sectionsOff },
@@ -509,7 +511,10 @@ describe("按类别分组的 Issue 结果区块 (#28)", () => {
     const outcome = await analyzeIssue(
       {
         ...options([adapter], [candidate]),
-        sections: new Set<IssueResultSection>(["summary", "missing_information"]),
+        sections: new Set<IssueResultSection>([
+          "summary",
+          "missing_information",
+        ]),
         sectionsByCategory: { feature: new Set(["summary"]) },
       },
       context,
@@ -519,5 +524,97 @@ describe("按类别分组的 Issue 结果区块 (#28)", () => {
     // bug 组未配置 → 回落通用组：只保留 summary + missing_information，其余清空。
     expect(outcome.analysis.result.missingInformation).toEqual(["OS version"]);
     expect(outcome.analysis.result.evidence).toEqual([]);
+  });
+});
+
+describe("deep issue analysis accounting", () => {
+  it("starts with the tool request and counts every exploration invocation", async () => {
+    let calls = 0;
+    const adapter: ModelProviderAdapter = {
+      provider: candidate.provider,
+      invoke: async (_candidate, request) => {
+        calls += 1;
+        if (calls === 1) {
+          expect(request.tools?.length).toBeGreaterThan(0);
+          return {
+            content: "",
+            usage: { inputTokens: 10, outputTokens: 5 },
+            toolCalls: [
+              { id: "read-1", name: "get_git_info", arguments: "{}" },
+            ],
+          };
+        }
+        return {
+          content: validIssueJson,
+          usage: { inputTokens: 20, outputTokens: 7 },
+        };
+      },
+    };
+    const outcome = await analyzeIssue(
+      {
+        ...options([adapter], [candidate]),
+        tools: {
+          context: {
+            client: {} as never,
+            installationId: "42",
+            owner: "o",
+            name: "r",
+            ref: "HEAD",
+          },
+          maxRounds: 3,
+        },
+      },
+      context,
+    );
+    expect(calls).toBe(2);
+    expect(outcome.outcome).toBe("valid");
+    expect(outcome.usage).toEqual({ inputTokens: 30, outputTokens: 12 });
+    expect(outcome.attempts).toHaveLength(2);
+    if (outcome.outcome === "valid") {
+      expect(outcome.analysis.triage?.version).toBe("issue-triage/v1");
+      expect(outcome.analysis.evidenceAudit?.unverifiedCount).toBe(1);
+    }
+  });
+
+  it("includes tool calls and the contract repair in a single usage total", async () => {
+    let calls = 0;
+    const adapter: ModelProviderAdapter = {
+      provider: candidate.provider,
+      invoke: async () => {
+        calls += 1;
+        return {
+          content:
+            calls === 1 ? "" : calls === 2 ? "invalid json" : validIssueJson,
+          usage: { inputTokens: 10, outputTokens: 5 },
+          ...(calls === 1
+            ? {
+                toolCalls: [
+                  { id: "read-1", name: "get_git_info", arguments: "{}" },
+                ],
+              }
+            : {}),
+        };
+      },
+    };
+    const outcome = await analyzeIssue(
+      {
+        ...options([adapter], [candidate]),
+        tools: {
+          context: {
+            client: {} as never,
+            installationId: "42",
+            owner: "o",
+            name: "r",
+            ref: "HEAD",
+          },
+          maxRounds: 3,
+        },
+      },
+      context,
+    );
+    expect(calls).toBe(3);
+    expect(outcome.outcome).toBe("valid");
+    expect(outcome.usage).toEqual({ inputTokens: 30, outputTokens: 15 });
+    expect(outcome.attempts).toHaveLength(3);
   });
 });

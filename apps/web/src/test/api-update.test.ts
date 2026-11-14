@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyUpdate, bumpCache, fetchUpdateHistory, fetchUpdateProgress, fetchUpdateStatus } from "../lib/api";
+import { getJson } from "../lib/api/http";
+import * as updateApi from "../lib/api/update";
+import { setToken } from "../lib/auth";
 
 const fetchMock = vi.fn<typeof fetch>();
 const jsonResponse = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
@@ -17,6 +20,27 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("fresh update progress API", () => {
+  it("reexports the modular update API and bypasses cached history without losing authentication", async () => {
+    expect(fetchUpdateStatus).toBe(updateApi.fetchUpdateStatus);
+    expect(fetchUpdateProgress).toBe(updateApi.fetchUpdateProgress);
+    expect(fetchUpdateHistory).toBe(updateApi.fetchUpdateHistory);
+    expect(applyUpdate).toBe(updateApi.applyUpdate);
+    setToken("update-session");
+    const cached = { items: [], currentVersion: "1.2.15", inProgress: true };
+    const fresh = { items: [], currentVersion: "1.2.17", inProgress: false };
+    fetchMock.mockResolvedValueOnce(jsonResponse(cached)).mockResolvedValueOnce(jsonResponse(fresh));
+    await expect(getJson("/update/history")).resolves.toEqual(cached);
+    const controller = new AbortController();
+    await expect(fetchUpdateProgress(controller.signal)).resolves.toEqual(fresh);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenLastCalledWith("/update/history", expect.objectContaining({
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: controller.signal,
+      headers: expect.objectContaining({ accept: "application/json", authorization: "Bearer update-session" }),
+    }));
+  });
+
   it("never reuses the GET history cache and disables browser caching on every read", async () => {
     const pending = { items: [{ at: "2026-11-13T10:00:00Z", from: "1.2.15", to: "v1.2.17", ok: true, status: "pending", id: "new" }], currentVersion: "1.2.15", inProgress: true };
     const confirmed = { items: [{ ...pending.items[0], status: "success" }], currentVersion: "1.2.17", inProgress: false };

@@ -1,4 +1,9 @@
+/**
+ * 模型输出契约：所有外部模型返回在这里校验，保留 v1 字段兼容已有消费者。
+ * 调用：prReviewContractSchema.safeParse(JSON.parse(modelText))。
+ */
 import { z } from "zod";
+import { containsControlCharacters } from "./utils/path.js";
 
 /** Severity describes impact. The server policy re-checks it before publish. */
 export const findingSeverityLevels = [
@@ -17,7 +22,20 @@ export const findingSchema = z
     rule: z.string().min(1).max(120),
     severity: z.enum(findingSeverityLevels),
     /** New-file path the finding attaches to. */
-    file: z.string().min(1).max(500),
+    file: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .refine((value) => {
+        const path = value.replaceAll("\\", "/");
+        return (
+          !path.startsWith("/") &&
+          !/^[a-z]:/iu.test(path) &&
+          !path.split("/").includes("..") &&
+          !containsControlCharacters(path)
+        );
+      }, "文件必须是仓库内的相对路径"),
     message: z.string().min(1).max(2_000),
     /** Verbatim excerpt from the diff so a human can verify the claim. */
     evidence: z.string().min(1).max(2_000),

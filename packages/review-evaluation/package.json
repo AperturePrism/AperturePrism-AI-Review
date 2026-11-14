@@ -1,0 +1,13 @@
+{
+  "name": "@apertureprism/review-evaluation",
+  "private": true,
+  "version": "1.2.18",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

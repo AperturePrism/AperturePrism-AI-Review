@@ -102,6 +102,8 @@ docker compose -f docker/docker-compose.prod.yml exec -T postgres \
     docker compose -f docker/docker-compose.prod.yml --env-file docker/.env.production up -d --force-recreate
     ```
 
+    首次升级包含工作台/自动化模块的新版本时，必须使用该版本的完整 Compose 文件重建整套服务，不能只重建 API；`analysis-worker` 与 API 需要挂载同一组工作台和自动化数据卷。
+
     完成后重新检查当前版本。`docker compose up` 成功或历史里出现 `latest` 本身不是运行目标版本的证据。新的确认状态只验证 API 的运行版本，不替代各 worker 的健康检查或全栈逐个镜像摘要审计。
 - **运行时配置热更新**：`PUT /settings`（`webui_api_token` / `github_webhook_secret` /
   `github_webhook_enabled` / `log_level` / `pr_check_run` / `pr_auto_review`，约 8s 生效）。

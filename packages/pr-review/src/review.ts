@@ -1,3 +1,8 @@
+/**
+ * PR 审查主线：模型调用 → 契约校验 → 一次修复 → 可核对的审查评估。
+ * 调用：await reviewPullRequest(options, renderedContext)。
+ * 默认返回的 review 保持旧契约；assessment 提供覆盖、基线及质量门禁。
+ */
 import type {
   ModelAttemptOutcome,
   ModelCandidate,
@@ -20,8 +25,17 @@ import {
   injectReviewHistory,
 } from "./prompt.js";
 import type { PrReviewContract } from "./types.js";
+import {
+  assessReviewWithChecks,
+  type ReviewAssessment,
+  type ReviewAssessmentOptions,
+} from "./assessment.js";
 import { parsePrReviewJson } from "./validate.js";
-import { builtinTools, runToolLoop, type ToolExecutionContext } from "./tools.js";
+import {
+  builtinTools,
+  runToolLoop,
+  type ToolExecutionContext,
+} from "./tools.js";
 
 export type PrReviewerOptions = {
   adapters: ReadonlyMap<string, ModelProviderAdapter>;
@@ -41,12 +55,16 @@ export type PrReviewerOptions = {
   history?: readonly ModelMessage[];
   /** PR 审查提示词版本；缺省用当前版本（机制与 Issue 提示词一致）。 */
   promptVersion?: string;
+  /** 评估配置；false 可关闭评估，原模型契约始终不变。 */
+  assessment?: ReviewAssessmentOptions | false;
 };
 
 export type PrReviewOutcome =
   | {
       outcome: "valid";
       review: PrReviewContract;
+      /** 输入覆盖、证据核对、基线、抑制和质量门禁。 */
+      assessment?: ReviewAssessment;
       usage: ModelUsage;
       candidate: ModelCandidate;
       attempts: readonly ModelAttemptOutcome[];
@@ -123,32 +141,23 @@ export async function reviewPullRequest(
 
   let mainContent: string;
   if (options.tools) {
-    const loop = await runToolLoop(
-      invoke,
-      messages,
-      options.tools.context,
-      {
-        tools: builtinTools(),
-        exploreInstruction:
-          "调用工具时注意：list_directory 先传空字符串 \"\" 拿仓库根目录，进子目录用相对路径；" +
-          "禁止绝对路径或 /home/user/repos/... 这类仓库名/用户目录前缀。" +
-          (mode === "deep"
-            ? "这是大规模/复杂 PR。你可以调用 read_file / list_directory / get_git_info 工具主动查看关键路径、跨文件依赖与相关源码，以全面理解变更影响后给出审查结果。"
-            : "你可以调用 read_file / list_directory / get_git_info 工具查看 diff 涉及或相关的源码文件以加深理解，然后给出审查结果。仅在确实需要更多上下文时才调用工具。"),
-        // 方案2：standard/deep 强制先读仓再作答，避免模型跳过工具仅按 diff 臆断（deepseek 常不调 read_file）。
-        forceToolUse: mode !== "quick",
-        ...(options.tools.maxRounds === undefined
-          ? {}
-          : { maxRounds: options.tools.maxRounds }),
-      },
-    );
+    const loop = await runToolLoop(invoke, messages, options.tools.context, {
+      tools: builtinTools(),
+      exploreInstruction:
+        '调用工具时注意：list_directory 先传空字符串 "" 拿仓库根目录，进子目录用相对路径；' +
+        "禁止绝对路径或 /home/user/repos/... 这类仓库名/用户目录前缀。" +
+        (mode === "deep"
+          ? "这是大规模/复杂 PR。你可以调用 read_file / list_directory / get_git_info 工具主动查看关键路径、跨文件依赖与相关源码，以全面理解变更影响后给出审查结果。"
+          : "你可以调用 read_file / list_directory / get_git_info 工具查看 diff 涉及或相关的源码文件以加深理解，然后给出审查结果。仅在确实需要更多上下文时才调用工具。"),
+      // 方案2：standard/deep 强制先读仓再作答，避免模型跳过工具仅按 diff 臆断（deepseek 常不调 read_file）。
+      forceToolUse: mode !== "quick",
+      ...(options.tools.maxRounds === undefined
+        ? {}
+        : { maxRounds: options.tools.maxRounds }),
+    });
     mainContent = loop.messages[loop.messages.length - 1]!.content;
   } else {
-    const request = buildPrReviewRequest(
-      context,
-      mode,
-      options.promptVersion,
-    );
+    const request = buildPrReviewRequest(context, mode, options.promptVersion);
     const main = await invoke(
       options.history ? { ...request, messages } : request,
     );
@@ -165,6 +174,15 @@ export async function reviewPullRequest(
     return {
       outcome: "valid",
       review: validation.review,
+      ...(options.assessment === false
+        ? {}
+        : {
+            assessment: await assessReviewWithChecks(
+              validation.review,
+              context,
+              options.assessment,
+            ),
+          }),
       usage: totalUsageValue(),
       candidate: sticky ?? options.candidates[0]!,
       attempts,
@@ -200,11 +218,23 @@ export async function reviewPullRequest(
     return {
       outcome: "valid",
       review: repaired.review,
+      ...(options.assessment === false
+        ? {}
+        : {
+            assessment: await assessReviewWithChecks(
+              repaired.review,
+              context,
+              options.assessment,
+            ),
+          }),
       usage,
       candidate: repair.candidate,
       attempts,
       durationMs: now() - startedAt,
-      messages: finalMessages,
+      messages: [
+        ...finalMessages,
+        { role: "assistant", content: repair.response.content },
+      ],
     };
   }
   return {

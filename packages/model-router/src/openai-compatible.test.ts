@@ -254,7 +254,9 @@ describe("OpenAI-compatible adapter tool calling", () => {
       unknown
     >;
     expect(Array.isArray(body.tools)).toBe(true);
-    const wire = (body.tools as { type?: string; function?: { name?: string } }[])[0];
+    const wire = (
+      body.tools as { type?: string; function?: { name?: string } }[]
+    )[0];
     // 网关要求 tools[i].type 必须为 "function"（issue #71/#73）。
     expect(wire?.type).toBe("function");
     expect(wire?.function?.name).toBe("read_file");
@@ -391,7 +393,8 @@ describe("OpenAI-compatible adapter tool calling", () => {
           {
             message: {
               content: "",
-              reasoning_content: "issue 是加群通知未发送，需要检查通知触发逻辑……",
+              reasoning_content:
+                "issue 是加群通知未发送，需要检查通知触发逻辑……",
             },
           },
         ],

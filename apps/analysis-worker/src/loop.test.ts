@@ -68,6 +68,110 @@ function collector() {
 
 const neverAbort = new AbortController().signal;
 
+describe("publication ownership handshake", () => {
+  it("advances the lease before an external write and does not advance twice", async () => {
+    const order: string[] = [];
+    const target = engine({
+      beginPublishing: async () => {
+        order.push("lease");
+        return true;
+      },
+      complete: async () => {
+        order.push("complete");
+        return true;
+      },
+    });
+    await runOnce({
+      engine: target.operations,
+      handler: async (_task, signal, execution) => {
+        expect(await execution!.beginPublishing()).toBe(true);
+        signal.throwIfAborted();
+        order.push("publish");
+        expect(await execution!.beginPublishing()).toBe(true);
+        return { outcome: "completed" };
+      },
+      heartbeatIntervalMs: 60_000,
+      idleDelayMs: 0,
+      shutdownSignal: neverAbort,
+    });
+    expect(order).toEqual(["lease", "publish", "complete"]);
+    expect(
+      target.calls().filter((call) => call === "beginPublishing"),
+    ).toHaveLength(1);
+  });
+
+  it("coalesces simultaneous requests for the same publication lease", async () => {
+    const target = engine();
+    await runOnce({
+      engine: target.operations,
+      handler: async (_task, _signal, execution) => {
+        expect(
+          await Promise.all([
+            execution!.beginPublishing(),
+            execution!.beginPublishing(),
+          ]),
+        ).toEqual([true, true]);
+        return { outcome: "completed" };
+      },
+      heartbeatIntervalMs: 60_000,
+      idleDelayMs: 0,
+      shutdownSignal: neverAbort,
+    });
+    expect(
+      target.calls().filter((call) => call === "beginPublishing"),
+    ).toHaveLength(1);
+  });
+
+  it("aborts a refused publication lease without publishing, failing, or completing the stale task", async () => {
+    const target = engine({ beginPublishing: async () => false });
+    const { events, onEvent } = collector();
+    let published = false;
+    await runOnce({
+      engine: target.operations,
+      handler: async (_task, signal, execution) => {
+        await execution!.beginPublishing();
+        signal.throwIfAborted();
+        published = true;
+        return { outcome: "completed" };
+      },
+      heartbeatIntervalMs: 60_000,
+      idleDelayMs: 0,
+      shutdownSignal: neverAbort,
+      onEvent,
+    });
+    expect(published).toBe(false);
+    expect(target.calls()).toEqual(["claim", "start", "beginPublishing"]);
+    expect(events).toEqual([
+      { type: "claimed", taskId: "task-1", attemptNumber: 1 },
+      { type: "lease_lost", taskId: "task-1" },
+    ]);
+  });
+
+  it("does not publish or complete after shutdown races with a successful handler result", async () => {
+    const controller = new AbortController();
+    const failures: string[] = [];
+    const target = engine({
+      fail: async (_task, category) => {
+        failures.push(category);
+        return null;
+      },
+    });
+    await runOnce({
+      engine: target.operations,
+      handler: async () => {
+        controller.abort();
+        return { outcome: "completed" };
+      },
+      heartbeatIntervalMs: 60_000,
+      idleDelayMs: 0,
+      shutdownSignal: controller.signal,
+    });
+    expect(target.calls()).not.toContain("beginPublishing");
+    expect(target.calls()).not.toContain("complete");
+    expect(failures).toEqual(["canceled"]);
+  });
+});
+
 describe("worker task processing", () => {
   it("walks a successful task through publishing before completing", async () => {
     const target = engine();
@@ -197,7 +301,10 @@ describe("worker task processing", () => {
     });
     await runOnce({
       engine: retrying.operations,
-      handler: async () => ({ outcome: "failed", errorCategory: "handler_error" }),
+      handler: async () => ({
+        outcome: "failed",
+        errorCategory: "handler_error",
+      }),
       heartbeatIntervalMs: 60_000,
       idleDelayMs: 0,
       shutdownSignal: neverAbort,
@@ -214,7 +321,10 @@ describe("worker task processing", () => {
     });
     await runOnce({
       engine: exhausted.operations,
-      handler: async () => ({ outcome: "failed", errorCategory: "invalid_output" }),
+      handler: async () => ({
+        outcome: "failed",
+        errorCategory: "invalid_output",
+      }),
       heartbeatIntervalMs: 60_000,
       idleDelayMs: 0,
       shutdownSignal: neverAbort,
@@ -234,7 +344,10 @@ describe("worker task processing", () => {
 
     const worked = await runOnce({
       engine: target.operations,
-      handler: async () => ({ outcome: "failed", errorCategory: "handler_error" }),
+      handler: async () => ({
+        outcome: "failed",
+        errorCategory: "handler_error",
+      }),
       heartbeatIntervalMs: 60_000,
       idleDelayMs: 0,
       shutdownSignal: neverAbort,
@@ -375,7 +488,7 @@ describe("worker graceful shutdown", () => {
     expect(events.at(-1)).toEqual({ type: "shutdown" });
   });
 
-  it("finishes the current task before exiting", async () => {
+  it("settles the canceled attempt before exiting without claiming another task", async () => {
     const controller = new AbortController();
     let claims = 0;
     const target = engine({
@@ -397,7 +510,8 @@ describe("worker graceful shutdown", () => {
       sleep: async () => undefined,
     });
 
-    expect(target.calls()).toContain("complete");
+    expect(target.calls()).toContain("fail");
+    expect(target.calls()).not.toContain("complete");
     expect(claims).toBe(1);
   });
 });

@@ -1,3 +1,8 @@
+/**
+ * 调度入口：登记四个明确的维护动作，再等待停止信号。
+ * 各动作的并发、防重叠和运行快照由 maintenance.ts 统一保管。
+ * 运行：node apps/scheduler/dist/apps/scheduler/src/main.js
+ */
 import { hostname } from "node:os";
 import {
   createCredentialCipher,
@@ -16,6 +21,12 @@ import {
 } from "../../../packages/task-engine/src/index.js";
 import { reconcileCheckRuns } from "./check-runs.js";
 import { memoryConsolidationSweep } from "./consolidation.js";
+import {
+  createMaintenance,
+  maintenanceHealth,
+  waitForMaintenance,
+} from "./maintenance.js";
+import { loadTaskRuntimePolicy } from "../../../packages/task-engine/src/runtime-policy.js";
 
 const config = loadConfig(process.env);
 const logger = createLogger(config.logLevel);
@@ -43,105 +54,80 @@ const githubProvider = createGithubAppProvider({
         : {}),
     }),
 });
-let checkRunSweep: Promise<void> | undefined;
+// 启动时校验可选队列与重试配置，拼错字段不等到领取时才暴露。
+loadTaskRuntimePolicy();
 
-function checkRunTick(): void {
-  if (checkRunSweep) return;
-  checkRunSweep = (async () => {
-    const github = await githubProvider.get();
-    if (!github || shutdown.signal.aborted) return;
-    const finalized = await reconcileCheckRuns({
-      db: database.db,
-      github,
-      signal: shutdown.signal,
-      onError: (error, publicationId) =>
-        logger.warn(
-          { err: error, publicationId },
-          "Check Run completion pending; will retry",
-        ),
-    });
-    if (finalized > 0)
-      logger.info({ finalized }, "Check Run reconciliation sweep");
-  })()
-    .catch((error: unknown) => {
-      logger.warn({ err: error }, "Check Run reconciliation sweep failed");
-    })
-    .finally(() => {
-      checkRunSweep = undefined;
-    });
-}
-
-/** How often lease recovery and retry-release sweep runs. */
-const SWEEP_INTERVAL_MS = 10_000;
-/** How often the memory-consolidation agent merges pending reflections. */
-const CONSOLIDATION_INTERVAL_MS = 10 * 60 * 1_000;
-
-/** Runs one maintenance sweep over the task table. */
-async function sweep(): Promise<void> {
-  const [recovered, released] = await Promise.all([
-    recoverExpiredLeases(database.db).catch((error: unknown) => {
-      logger.warn({ err: error }, "lease recovery sweep failed");
-      return 0;
-    }),
-    releaseDueRetries(database.db).catch((error: unknown) => {
-      logger.warn({ err: error }, "retry release sweep failed");
-      return 0;
-    }),
-  ]);
-  if (recovered > 0 || released > 0) {
-    logger.info({ recovered, released }, "task maintenance sweep");
-  }
-}
-
-/**
- * Runs one memory-consolidation pass. Fire-and-forget from the caller so a
- * slow model call never blocks lease recovery; failures are logged inside.
- */
-async function consolidationTick(): Promise<void> {
-  const result = await memoryConsolidationSweep(database, logger).catch(
-    (error: unknown) => {
-      logger.warn({ err: error }, "memory consolidation sweep failed");
-      return null;
+const maintenance = createMaintenance({
+  jobs: [
+    {
+      name: "lease-recovery",
+      intervalMs: 10_000,
+      run: () => recoverExpiredLeases(database.db),
     },
-  );
-  if (result && (result.repositories > 0 || result.rules > 0)) {
-    logger.info(result, "memory consolidation sweep");
-  }
-}
+    {
+      name: "retry-release",
+      intervalMs: 10_000,
+      run: () => releaseDueRetries(database.db),
+    },
+    {
+      name: "check-runs",
+      intervalMs: 10_000,
+      run: async (signal) => {
+        const github = await githubProvider.get();
+        if (!github || signal.aborted) return 0;
+        return reconcileCheckRuns({
+          db: database.db,
+          github,
+          signal,
+          onError: (error, publicationId) =>
+            logger.warn(
+              { err: error, publicationId },
+              "Check Run completion pending; will retry",
+            ),
+        });
+      },
+    },
+    {
+      name: "memory-consolidation",
+      intervalMs: 10 * 60_000,
+      run: (signal) => memoryConsolidationSweep(database, logger, { signal }),
+    },
+  ],
+  onEvent(event) {
+    if (event.type === "failed")
+      logger.warn(
+        { err: event.error, job: event.name, durationMs: event.durationMs },
+        "maintenance job failed",
+      );
+    if (event.type === "completed" && event.result)
+      logger.info(
+        { job: event.name, result: event.result, durationMs: event.durationMs },
+        "maintenance job completed",
+      );
+  },
+});
 
 async function loop(): Promise<void> {
   logger.info({ workerId }, "scheduler starting");
-  await sweep();
-  checkRunTick();
-  void consolidationTick();
-  let lastConsolidation = Date.now();
-  while (!shutdown.signal.aborted) {
-    await sleep(SWEEP_INTERVAL_MS, shutdown.signal);
-    if (shutdown.signal.aborted) break;
-    await sweep();
-    checkRunTick();
-    if (Date.now() - lastConsolidation >= CONSOLIDATION_INTERVAL_MS) {
-      lastConsolidation = Date.now();
-      void consolidationTick();
+  let lastHealth = Date.now();
+  try {
+    while (!shutdown.signal.aborted) {
+      await maintenance.tick();
+      if (Date.now() - lastHealth >= 60_000) {
+        lastHealth = Date.now();
+        const states = maintenance.snapshot();
+        logger.info(
+          { workerId, ...maintenanceHealth(states), jobs: states },
+          "scheduler health",
+        );
+      }
+      await waitForMaintenance(1_000, shutdown.signal);
     }
+  } finally {
+    await maintenance.stop(); // 等待正在运行的维护结束，再关闭共用数据库连接。
+    await database.close();
   }
-  await checkRunSweep;
-  await database.close();
   logger.info({ workerId }, "scheduler stopped");
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
 }
 
 function requestShutdown(signal: string): void {

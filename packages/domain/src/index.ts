@@ -57,6 +57,8 @@ export type LeasedTask = AnalysisTask & {
   leaseOwner: string;
   leaseExpiresAt: Date;
   heartbeatAt: Date;
+  /** 持久尝试记录的永久标识；人工重跑重置次数后仍不会复用。 */
+  attemptId?: string;
   attemptNumber: number;
   /** Raw task payload carried through the lease so workers know the subject. */
   payload: unknown;

@@ -1,3 +1,8 @@
+/**
+ * PR 上下文：在任务指定的提交上读取 diff 与源码，避免审查途中被新 push 换掉输入。
+ * 调用：await buildPrContext(github, { installationId, owner, name, pullNumber, expectedRevision: headSha })。
+ * expectedRevision 可选以兼容旧调用；正式 worker 应始终传入任务已经固定的 SHA。
+ */
 import type {
   GitHubClient,
   GitHubPullRequest,
@@ -17,7 +22,22 @@ export type PrContextInput = {
   owner: string;
   name: string;
   pullNumber: number;
+  /** 固定当前任务的 PR head；不匹配时不审查、不发布。 */
+  expectedRevision?: string;
 };
+
+/** 任务已经过时或读取期间有新 push；调用方应停止旧任务，等待新版本任务处理。 */
+export class PrContextRevisionError extends Error {
+  readonly expected: string;
+  readonly actual: string;
+
+  constructor(expected: string, actual: string) {
+    super("PR head 在审查前或读取期间已变化，不能把新 diff 发布到旧提交");
+    this.name = "PrContextRevisionError";
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
 
 export type PrReviewContext = {
   repository: { owner: string; name: string };
@@ -48,26 +68,37 @@ export async function buildPrContext(
   budget: PrReviewBudget = DEFAULT_PR_REVIEW_BUDGET,
   signal?: AbortSignal,
 ): Promise<PrReviewContext> {
-  const [pullRequest, diffText] = await Promise.all([
-    github.getPullRequest(
-      {
-        installationId: input.installationId,
-        owner: input.owner,
-        name: input.name,
-        number: input.pullNumber,
-      },
-      signal,
-    ),
-    github.getPullRequestDiff(
-      {
-        installationId: input.installationId,
-        owner: input.owner,
-        name: input.name,
-        number: input.pullNumber,
-      },
-      signal,
-    ),
-  ]);
+  const identity = {
+    installationId: input.installationId,
+    owner: input.owner,
+    name: input.name,
+    number: input.pullNumber,
+  };
+  let pullRequest: GitHubPullRequest;
+  let diffText: string;
+  if (input.expectedRevision !== undefined) {
+    // diff 接口不支持指定 SHA，因此以读取前后两次相同的 head 来拒绝变化中的输入。
+    pullRequest = await github.getPullRequest(identity, signal);
+    if (pullRequest.headSha !== input.expectedRevision)
+      throw new PrContextRevisionError(
+        input.expectedRevision,
+        pullRequest.headSha,
+      );
+    diffText = await github.getPullRequestDiff(identity, signal);
+    const after = await github.getPullRequest(identity, signal);
+    if (after.headSha !== input.expectedRevision)
+      throw new PrContextRevisionError(input.expectedRevision, after.headSha);
+  } else {
+    [pullRequest, diffText] = await Promise.all([
+      github.getPullRequest(identity, signal),
+      github.getPullRequestDiff(identity, signal),
+    ]);
+  }
+  if (!pullRequest.headSha)
+    throw new PrContextRevisionError(
+      input.expectedRevision ?? "PR head SHA",
+      "",
+    );
 
   const parsed = parseUnifiedDiff(diffText);
   const rendered = renderDiffForModel(parsed, budget);
@@ -78,17 +109,15 @@ export async function buildPrContext(
   const CHANGED_FILE_PRELOAD_CHARS = 24_000;
   const CHANGED_FILE_PRELOAD_TOTAL = 60_000;
   const textFiles = parsed.files
-    .filter((f) => f.hunks && f.hunks.length > 0)
+    .filter((f) => f.newPath !== "/dev/null" && f.hunks && f.hunks.length > 0)
     .map((f) => ({ path: f.newPath, churn: f.additions + f.deletions }))
     .sort((a, b) => b.churn - a.churn)
     .slice(0, CHANGED_FILE_PRELOAD_MAX);
-  const headSha =
-    (pullRequest as { head?: { sha?: string } }).head?.sha ??
-    (pullRequest as { mergeCommitSha?: string }).mergeCommitSha ??
-    "HEAD";
+  const headSha = pullRequest.headSha; // GitHub 适配器已经把 head.sha 规范化为此字段。
   const preloadedFiles: { path: string; content: string }[] = [];
   let preloadTotal = 0;
   for (const f of textFiles) {
+    signal?.throwIfAborted();
     if (preloadTotal >= CHANGED_FILE_PRELOAD_TOTAL) break;
     try {
       const file = await github.getFileContents(
@@ -102,11 +131,18 @@ export async function buildPrContext(
         signal,
       );
       if (file && file.content) {
-        const content = file.content.slice(0, CHANGED_FILE_PRELOAD_CHARS);
+        const content = file.content.slice(
+          0,
+          Math.min(
+            CHANGED_FILE_PRELOAD_CHARS,
+            CHANGED_FILE_PRELOAD_TOTAL - preloadTotal,
+          ),
+        );
         preloadTotal += content.length;
         preloadedFiles.push({ path: f.path, content });
       }
     } catch {
+      signal?.throwIfAborted(); // 用户取消不能被当成单个文件缺失而吞掉。
       // 单个文件读取失败不阻断，保留其它可读文件。
     }
   }

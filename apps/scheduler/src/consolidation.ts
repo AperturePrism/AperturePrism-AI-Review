@@ -124,6 +124,7 @@ async function loadCandidates(
 export async function memoryConsolidationSweep(
   client: DatabaseClient,
   logger: Logger,
+  options: { signal?: AbortSignal } = {},
 ): Promise<{ repositories: number; rules: number }> {
   const config = loadConfig(process.env);
   const cipher = config.credentialMasterKey
@@ -182,6 +183,7 @@ export async function memoryConsolidationSweep(
   let repositories = 0;
   let rules = 0;
   for (const row of repoRows) {
+    if (options.signal?.aborted) break; // 停止时不再开始下一个仓库的模型调用。
     const repositoryId = row.repositoryId;
     if (!repositoryId) continue;
     try {
@@ -215,6 +217,7 @@ export async function memoryConsolidationSweep(
         },
         deadlineMs: 90_000,
         retryPolicy: consolidationRetryPolicy,
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       const entries = parseConsolidationJson(result.response.content);
       for (const entry of entries) {

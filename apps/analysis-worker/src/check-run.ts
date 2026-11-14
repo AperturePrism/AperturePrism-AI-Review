@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+import type { PgDatabase,PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { externalPublications } from "../../../packages/database/src/schema.js";
 import type { GitHubClient } from "../../../packages/github-adapter/src/index.js";
 

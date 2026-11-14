@@ -131,7 +131,9 @@ describe("issue comment templates", () => {
       ],
     });
     const comment = buildIssueAnalysisComment(graded);
-    expect(comment).toContain("（未读取源码，路径待确认）：在合并转发渲染处移除子消息时间字段");
+    expect(comment).toContain(
+      "（未读取源码，路径待确认）：在合并转发渲染处移除子消息时间字段",
+    );
     expect(comment).not.toContain("`（未读取源码，路径待确认）`");
   });
 
