@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ALLOWED_SETTING_KEYS,
   BOOLEAN_DEFAULTS,
+  DEFAULT_GLOBAL_REVIEW_RULES_LIMIT_TIER,
+  GLOBAL_REVIEW_RULES_LIMIT_TIERS,
   KNOWN_SETTING_KEYS,
   MAX_GLOBAL_REVIEW_RULES_CHARS,
   REPO_SCOPED_SETTING_KEYS,
@@ -12,6 +14,7 @@ import {
   parseBool,
   parseLogLevel,
   parseSpamHandling,
+  resolveGlobalReviewRulesLimits,
   validateSettingValue,
 } from "./settings-registry.js";
 
@@ -274,5 +277,32 @@ describe("validateSettingValue", () => {
     expect(validateSettingValue("issue_assignee", "octocat")).toBeNull();
     expect(validateSettingValue("webui_api_token", "anything")).toBeNull();
     expect(validateSettingValue("embedding_base_url", "not-a-url")).toBeNull();
+  });
+
+  it("offers three global rules capacity tiers and falls back to standard", () => {
+    expect(getSettingSpec("review_rules_global_tier")).toMatchObject({
+      kind: "enum",
+      options: ["standard", "extended", "large"],
+    });
+    expect(validateSettingValue("review_rules_global_tier", "extended")).toBeNull();
+    expect(validateSettingValue("review_rules_global_tier", "huge")).not.toBeNull();
+    expect(DEFAULT_GLOBAL_REVIEW_RULES_LIMIT_TIER).toBe("standard");
+    expect(resolveGlobalReviewRulesLimits(undefined)).toEqual({
+      maxChars: 16000,
+      maxBytes: 64000,
+    });
+    expect(resolveGlobalReviewRulesLimits("bogus")).toEqual({
+      maxChars: 16000,
+      maxBytes: 64000,
+    });
+    expect(resolveGlobalReviewRulesLimits("extended")).toEqual({
+      maxChars: 32000,
+      maxBytes: 128000,
+    });
+    expect(resolveGlobalReviewRulesLimits("large")).toEqual({
+      maxChars: GLOBAL_REVIEW_RULES_LIMIT_TIERS.large.chars,
+      maxBytes: GLOBAL_REVIEW_RULES_LIMIT_TIERS.large.bytes,
+    });
+    expect(MAX_GLOBAL_REVIEW_RULES_CHARS).toBe(64000);
   });
 });

@@ -414,6 +414,7 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
         {
           role: "review",
           version: "v1",
+          createdAt: "2026-11-14T00:00:00.000Z",
           candidates: [
             { provider: "p", accountName: "p-main", model: "model-live" },
           ],

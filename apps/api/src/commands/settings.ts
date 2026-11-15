@@ -8,6 +8,7 @@ import type { HttpRoute } from "../utils/routes.js";
 import {
   getSettingSpec,
   BOOLEAN_DEFAULTS,
+  DEFAULT_GLOBAL_REVIEW_RULES_LIMIT_TIER,
   validateSettingValue,
   KNOWN_SETTING_KEYS,
 } from "../../../../packages/config/src/index.js";
@@ -113,6 +114,8 @@ export function settingDefaultValue(key: string): string {
     return fallback === undefined ? "" : String(fallback);
   }
   if (key === "spam_handling") return "close";
+  if (key === "review_rules_global_tier")
+    return DEFAULT_GLOBAL_REVIEW_RULES_LIMIT_TIER;
   if (key === "log_level") return config.logLevel;
   if (key === "issue_reanalyze_min_change")
     return String(DEFAULT_MIN_CHANGE_RATIO);

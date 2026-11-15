@@ -3,13 +3,17 @@
  * @example GET /repo-rules/global; PUT {content,expectedContentHash}; POST /from-url {url}
  */
 import type { IncomingMessage } from "node:http";
-import { MAX_GLOBAL_REVIEW_RULES_CHARS } from "../../../../packages/config/src/index.js";
+import {
+  MAX_GLOBAL_REVIEW_RULES_CHARS,
+  resolveGlobalReviewRulesLimits,
+} from "../../../../packages/config/src/index.js";
 import {
   GlobalReviewRulesConflict,
   loadGlobalReviewRules,
   saveGlobalReviewRules,
   type GlobalReviewRules,
 } from "../../../../packages/database/src/global-review-rules.js";
+import { loadSettings } from "../../../../packages/database/src/settings-store.js";
 import {
   fetchPublicRuleSourceText,
   RuleSourceError,
@@ -19,9 +23,14 @@ import { database } from "../runtime.js";
 import { HttpError, json, readBody } from "../utils/http.js";
 import type { HttpRoute } from "../utils/routes.js";
 
+/** 硬上限字节数：大型档 64000 字符按每字符最多 4 字节。 */
 export const MAX_GLOBAL_RULES_BYTES = MAX_GLOBAL_REVIEW_RULES_CHARS * 4;
 const bodyLimit = MAX_GLOBAL_REVIEW_RULES_CHARS * 6 + 1024;
 const urlLimit = 4096;
+
+export const GLOBAL_REVIEW_RULES_TIER_KEY = "review_rules_global_tier";
+
+export type GlobalRulesLimits = { maxChars: number; maxBytes: number };
 
 export type GlobalRulesServices = {
   isAdmin: (request: IncomingMessage) => Promise<boolean>;
@@ -31,9 +40,12 @@ export type GlobalRulesServices = {
     content: string;
     expectedContentHash: string;
   }) => Promise<GlobalReviewRules>;
+  /** 当前容量档位；读取失败按标准档处理，绝不放宽上限。 */
+  limits: () => Promise<GlobalRulesLimits>;
   fetchSource: (
     url: string,
     signal: AbortSignal,
+    limits: GlobalRulesLimits,
   ) => Promise<{ content: string; sourceUrl: string }>;
   audit: (
     request: IncomingMessage,
@@ -65,15 +77,18 @@ async function objectBody(
 }
 
 /** 限制与 worker 注入预算相同，导入时不静默截断规则。 */
-export function validateGlobalRulesContent(value: unknown): string {
+export function validateGlobalRulesContent(
+  value: unknown,
+  limits: GlobalRulesLimits = resolveGlobalReviewRulesLimits(undefined),
+): string {
   if (typeof value !== "string") throw new HttpError(400, "content 必须是文本");
   if (
-    value.length > MAX_GLOBAL_REVIEW_RULES_CHARS ||
-    Buffer.byteLength(value, "utf8") > MAX_GLOBAL_RULES_BYTES
+    value.length > limits.maxChars ||
+    Buffer.byteLength(value, "utf8") > limits.maxBytes
   )
     throw new HttpError(
       413,
-      `全局规则最多 ${MAX_GLOBAL_REVIEW_RULES_CHARS} 字符、${MAX_GLOBAL_RULES_BYTES} UTF-8 字节`,
+      `全局规则最多 ${limits.maxChars} 字符、${limits.maxBytes} UTF-8 字节`,
     );
   const binaryControl = [...value].some((character) => {
     const code = character.charCodeAt(0);
@@ -87,7 +102,10 @@ export function validateGlobalRulesContent(value: unknown): string {
   return value;
 }
 
-export function parseGlobalRulesUpdate(input: Record<string, unknown>) {
+export function parseGlobalRulesUpdate(
+  input: Record<string, unknown>,
+  limits: GlobalRulesLimits = resolveGlobalReviewRulesLimits(undefined),
+) {
   if (
     Object.keys(input).length !== 2 ||
     Object.keys(input).some(
@@ -98,7 +116,7 @@ export function parseGlobalRulesUpdate(input: Record<string, unknown>) {
       400,
       "需要 content 和 expectedContentHash，不能附带其他字段",
     );
-  const content = validateGlobalRulesContent(input.content);
+  const content = validateGlobalRulesContent(input.content, limits);
   if (
     typeof input.expectedContentHash !== "string" ||
     !/^[0-9a-f]{64}$/i.test(input.expectedContentHash)
@@ -156,6 +174,7 @@ export function createGlobalRulesRoutes(
       handle: async (request, response, requestId) => {
         const write = request.method === "PUT";
         await requireAdmin(request, write);
+        const limits = await services.limits();
         if (!write) {
           json(
             response,
@@ -163,14 +182,16 @@ export function createGlobalRulesRoutes(
             {
               ...(await services.load()),
               canManage: !(await services.isReadOnly(request)),
-              maxChars: MAX_GLOBAL_REVIEW_RULES_CHARS,
-              maxBytes: MAX_GLOBAL_RULES_BYTES,
+              ...limits,
             },
             requestId,
           );
           return;
         }
-        const input = parseGlobalRulesUpdate(await objectBody(request));
+        const input = parseGlobalRulesUpdate(
+          await objectBody(request, limits.maxChars * 6 + 1024),
+          limits,
+        );
         try {
           const saved = await services.save(input);
           services.audit(request, "review_rules_global.update", {
@@ -183,8 +204,7 @@ export function createGlobalRulesRoutes(
             {
               ...saved,
               canManage: true,
-              maxChars: MAX_GLOBAL_REVIEW_RULES_CHARS,
-              maxBytes: MAX_GLOBAL_RULES_BYTES,
+              ...limits,
             },
             requestId,
           );
@@ -223,11 +243,13 @@ export function createGlobalRulesRoutes(
         request.once("aborted", abort);
         response.once("close", abort);
         try {
+          const limits = await services.limits();
           const source = await services.fetchSource(
             input.url.trim(),
             controller.signal,
+            limits,
           );
-          const content = validateGlobalRulesContent(source.content);
+          const content = validateGlobalRulesContent(source.content, limits);
           if (!content.trim()) throw new HttpError(400, "规则链接返回了空文本");
           json(
             response,
@@ -256,6 +278,9 @@ export function createGlobalRulesRoutes(
           const bounded = ["byte_limit", "character_limit"].includes(
             error.code,
           );
+          const active = await services
+            .limits()
+            .catch(() => resolveGlobalReviewRulesLimits(undefined));
           json(
             response,
             bounded ? 413 : 400,
@@ -264,8 +289,8 @@ export function createGlobalRulesRoutes(
               reason: "rules_url_import_failed",
               code: error.code,
               message: bounded
-                ? `规则内容超过导入上限：最多 ${MAX_GLOBAL_REVIEW_RULES_CHARS} 字符、${MAX_GLOBAL_RULES_BYTES} UTF-8 字节`
-                : `无法导入规则：请使用公开的 HTTP(S) UTF-8 文本链接，最多 ${MAX_GLOBAL_REVIEW_RULES_CHARS} 字符`,
+                ? `规则内容超过导入上限：当前档位最多 ${active.maxChars} 字符、${active.maxBytes} UTF-8 字节；可在「全局规则容量档位」提高上限`
+                : `无法导入规则：请使用公开的 HTTP(S) UTF-8 文本链接，最多 ${active.maxChars} 字符`,
             },
             requestId,
           );
@@ -283,11 +308,24 @@ export const routes = createGlobalRulesRoutes({
   isReadOnly: isReadOnlyRequest,
   load: () => loadGlobalReviewRules(database.db),
   save: (input) => saveGlobalReviewRules(database.db, input),
-  fetchSource: (url, signal) =>
+  limits: async () => {
+    try {
+      const values = await loadSettings(database.db, [
+        GLOBAL_REVIEW_RULES_TIER_KEY,
+      ]);
+      return resolveGlobalReviewRulesLimits(
+        values.get(GLOBAL_REVIEW_RULES_TIER_KEY),
+      );
+    } catch {
+      // 读取档位失败时按标准档处理：宁可拒绝导入，也不放宽提示词预算。
+      return resolveGlobalReviewRulesLimits(undefined);
+    }
+  },
+  fetchSource: (url, signal, limits) =>
     fetchPublicRuleSourceText(url, {
       signal,
-      maxBytes: MAX_GLOBAL_RULES_BYTES,
-      maxChars: MAX_GLOBAL_REVIEW_RULES_CHARS,
+      maxBytes: limits.maxBytes,
+      maxChars: limits.maxChars,
       strictUtf8: true,
       rejectTruncation: true,
     }),

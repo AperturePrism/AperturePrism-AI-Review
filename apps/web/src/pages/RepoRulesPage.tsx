@@ -92,6 +92,12 @@ export function RepoRulesPage() {
       <GlobalRulesEditor />
 
       <SettingsSection
+        keys={["review_rules_global_tier"]}
+        title="全局规则容量档位"
+        desc="档位越高，能保存的全局规则越长；规则会完整注入每次 Issue/PR 分析，档位越高模型调用成本也越高。切换后刷新本页即可按新上限编辑与导入。"
+      />
+
+      <SettingsSection
         keys={["repo_rules_enabled"]}
         title="仓库规则全局默认"
         desc="此开关只控制仓库目录和外部链接规则；各仓库可以单独覆盖，关闭不影响上面的全局规则。"

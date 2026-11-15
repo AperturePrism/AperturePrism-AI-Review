@@ -50,6 +50,7 @@ integration("global review rules PostgreSQL HTTP persistence", () => {
         content: "# 预览，不自动写入",
         sourceUrl: "https://rules.example/global.md",
       }),
+      limits: async () => ({ maxChars: 16000, maxBytes: 64000 }),
       audit: () => undefined,
     });
     server = createServer((request, response) => {

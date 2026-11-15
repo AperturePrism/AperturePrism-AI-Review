@@ -40,6 +40,11 @@ const ENUM_OPTION_LABELS: Record<string, Record<string, string>> = {
   },
   scan_mode: { full: "全量", history: "增量" },
   agent_plan_mode: { auto: "自动", manual: "手动" },
+  review_rules_global_tier: {
+    standard: "标准 · 16000 字符",
+    extended: "扩展 · 32000 字符",
+    large: "大型 · 64000 字符",
+  },
 };
 
 export function enumOptionLabel(settingKey: string, value: string): string {

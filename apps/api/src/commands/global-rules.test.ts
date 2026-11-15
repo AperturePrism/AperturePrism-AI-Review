@@ -50,6 +50,10 @@ function services(content = "既有全局规则") {
       content: "# 导入规则\n优先验证证据",
       sourceUrl: "https://rules.example/rules.md",
     })),
+    limits: vi.fn<GlobalRulesServices["limits"]>(async () => ({
+      maxChars: 16000,
+      maxBytes: 64000,
+    })),
     audit: vi.fn(),
   };
 }
@@ -394,6 +398,40 @@ describe("global review rules HTTP contract", () => {
       ).toBe(413);
     });
   });
+  it("applies the configured capacity tier to reads, saves and imports", async () => {
+    const deps = services();
+    deps.limits.mockResolvedValue({ maxChars: 32000, maxBytes: 128000 });
+    await http(deps, async (url) => {
+      expect(await (await fetch(url + "/repo-rules/global")).json()).toMatchObject(
+        { maxChars: 32000, maxBytes: 128000 },
+      );
+      const content = "中".repeat(20000);
+      expect(
+        (await fetch(url + "/repo-rules/global", put(content))).status,
+      ).toBe(200);
+      expect(
+        (
+          await fetch(
+            url + "/repo-rules/global",
+            put("中".repeat(32001), globalReviewRulesHash(content)),
+          )
+        ).status,
+      ).toBe(413);
+      expect(
+        (
+          await fetch(
+            url + "/repo-rules/global/from-url",
+            post({ url: "https://rules.example/large.md" }),
+          )
+        ).status,
+      ).toBe(200);
+    });
+    expect(deps.fetchSource).toHaveBeenCalledWith(
+      "https://rules.example/large.md",
+      expect.any(AbortSignal),
+      { maxChars: 32000, maxBytes: 128000 },
+    );
+  });
   it("rejects invalid wire UTF-8 and excessive request bytes", async () => {
     const deps = services();
     await http(deps, async (url) => {
@@ -472,6 +510,6 @@ describe("global review rules HTTP contract", () => {
       ).toBe(415);
     });
   });
-  it("exports the same bounded UTF-8 budget as the worker", () =>
-    expect(MAX_GLOBAL_RULES_BYTES).toBe(64000));
+  it("exports the hard UTF-8 budget of the largest capacity tier", () =>
+    expect(MAX_GLOBAL_RULES_BYTES).toBe(64000 * 4));
 });

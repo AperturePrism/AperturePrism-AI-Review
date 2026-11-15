@@ -61,7 +61,35 @@ export type SettingSpec = {
   maxLength?: number;
 };
 
-export const MAX_GLOBAL_REVIEW_RULES_CHARS = 16_000;
+/** 全局审核规则容量档位：规则文本会完整注入每次 Issue/PR 分析提示词。 */
+export const GLOBAL_REVIEW_RULES_LIMIT_TIERS = {
+  standard: { chars: 16_000, bytes: 64_000 },
+  extended: { chars: 32_000, bytes: 128_000 },
+  large: { chars: 64_000, bytes: 256_000 },
+} as const;
+
+export type GlobalReviewRulesLimitTier =
+  keyof typeof GLOBAL_REVIEW_RULES_LIMIT_TIERS;
+
+export const DEFAULT_GLOBAL_REVIEW_RULES_LIMIT_TIER: GlobalReviewRulesLimitTier =
+  "standard";
+
+/** 历史数据与 worker 注入的硬上限：任何档位都不能超过大型档。 */
+export const MAX_GLOBAL_REVIEW_RULES_CHARS =
+  GLOBAL_REVIEW_RULES_LIMIT_TIERS.large.chars;
+
+/** 缺失、非法或读取失败都回落到标准档，绝不放宽预算。 */
+export function resolveGlobalReviewRulesLimits(tier: string | undefined): {
+  maxChars: number;
+  maxBytes: number;
+} {
+  const limits =
+    GLOBAL_REVIEW_RULES_LIMIT_TIERS[
+      tier === "extended" || tier === "large" ? tier : "standard"
+    ];
+  return { maxChars: limits.chars, maxBytes: limits.bytes };
+}
+
 
 /**
  * 注册表本体。顺序即 WebUI 内分组内的展示顺序。
@@ -172,9 +200,21 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
     envVar: null,
     hotReload: "poll",
     label: "全局审核规则",
-    hint: "适用于所有仓库的 Issue 分析、PR 审查与 PR 专家团队。与仓库目录及外部链接规则叠加，不受「仓库审核规则」开关影响；留空或回落默认可停用。最多 16000 字符，保存后对新分析生效，无需重启",
+    hint: "适用于所有仓库的 Issue 分析、PR 审查与 PR 专家团队。与仓库目录及外部链接规则叠加，不受「仓库审核规则」开关影响；留空或回落默认可停用。容量按「全局规则容量档位」校验，保存后对新分析生效，无需重启",
     multiline: true,
     maxLength: MAX_GLOBAL_REVIEW_RULES_CHARS,
+  },
+  {
+    key: "review_rules_global_tier",
+    group: "issue",
+    kind: "enum",
+    secret: false,
+    repoScoped: false,
+    envVar: null,
+    hotReload: "poll",
+    label: "全局规则容量档位",
+    hint: "标准 16000 字符 / 扩展 32000 字符 / 大型 64000 字符；档位越高可保存的规则越长，但每次分析注入的提示词与模型成本也越高",
+    options: ["standard", "extended", "large"],
   },
   {
     key: "repo_rules_enabled",
