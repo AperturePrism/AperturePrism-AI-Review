@@ -560,6 +560,23 @@ export function createWorkbenchBatchDispatcher(options: {
         });
         const existing = await tasks.find(linkedKey);
         if (existing?.id === item.result.taskId) {
+          // 批次重试（attempts/generation 前进）仍要复活已失败的真实任务。
+          const payload = taskPayload(existing);
+          const previousAttempt =
+            typeof item.result.dispatchAttempt === "number"
+              ? item.result.dispatchAttempt
+              : 1;
+          const generation = item.generation ?? 0;
+          const recordedGeneration = Number(payload.workbenchGeneration ?? 0);
+          if (
+            ["failed", "canceled"].includes(existing.status) &&
+            (previousAttempt < item.attempts || generation > recordedGeneration)
+          ) {
+            if (await tasks.retry(existing.id)) {
+              summary.resumed += 1;
+              return;
+            }
+          }
           if (["completed", "failed", "canceled"].includes(existing.status)) {
             summary[await finish(repository.fullName, batch, item, existing)] += 1;
           }
