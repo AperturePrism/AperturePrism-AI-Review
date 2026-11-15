@@ -9,7 +9,11 @@ import {
 import { connect, type AddressInfo } from "node:net";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchPublicRuleSourceText, RuleSourceError } from "./rule-source.js";
+import {
+  fetchPublicRuleSourceText,
+  normalizeRuleSourceUrl,
+  RuleSourceError,
+} from "./rule-source.js";
 
 const mocks = vi.hoisted(() => ({ lookup: vi.fn() }));
 vi.mock("node:dns/promises", () => ({ lookup: mocks.lookup }));
@@ -210,5 +214,32 @@ describe("public rule source strict native HTTP import", () => {
     await vi.waitFor(() => expect(requests).toHaveLength(1));
     expect(await caught).toBe(deadline.reason);
     expect(deadline.reason).toMatchObject({ name: "TimeoutError" });
+  });
+});
+
+describe("rule source url normalization", () => {
+  it("rewrites GitHub file pages to their raw text address", () => {
+    expect(
+      normalizeRuleSourceUrl(
+        "https://github.com/owner/repo/blob/main/docs/rules.md?plain=1#top",
+      ),
+    ).toBe("https://raw.githubusercontent.com/owner/repo/main/docs/rules.md");
+    expect(
+      normalizeRuleSourceUrl(
+        "https://www.github.com/owner/repo/raw/feature/branch/rules.md",
+      ),
+    ).toBe(
+      "https://raw.githubusercontent.com/owner/repo/feature/branch/rules.md",
+    );
+  });
+
+  it("keeps raw addresses and unrelated links untouched", () => {
+    for (const target of [
+      "https://raw.githubusercontent.com/owner/repo/main/rules.md",
+      "https://example.com/owner/repo/blob/main/rules.md",
+      "https://github.com/owner/repo",
+      "not a url",
+    ])
+      expect(normalizeRuleSourceUrl(target)).toBe(target);
   });
 });

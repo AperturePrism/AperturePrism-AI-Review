@@ -237,6 +237,25 @@ async function readTextResponse(
   }
 }
 
+/**
+ * GitHub 文件网页（blob/raw）返回的是整页 HTML，按规则文本导入必然触发体积
+ * 上限；统一改写成 raw 文件地址。其它地址原样返回，交给后续公有地址校验。
+ */
+export function normalizeRuleSourceUrl(rawUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+  const host = url.hostname.toLowerCase();
+  if (host !== "github.com" && host !== "www.github.com") return rawUrl;
+  const match = /^\/([^/]+)\/([^/]+)\/(?:blob|raw)\/(.+)$/.exec(url.pathname);
+  if (!match) return rawUrl;
+  const [, owner, repository, rest] = match;
+  return `https://raw.githubusercontent.com/${owner}/${repository}/${rest}`;
+}
+
 export async function fetchPublicRuleSourceText(
   rawUrl: string,
   options: PublicRuleSourceOptions = {},
@@ -258,7 +277,7 @@ export async function fetchPublicRuleSourceText(
   ]);
   let url: URL;
   try {
-    url = new URL(rawUrl);
+    url = new URL(normalizeRuleSourceUrl(rawUrl));
   } catch {
     throw new RuleSourceError(
       "invalid_url",
