@@ -543,6 +543,29 @@ export function createWorkbenchBatchDispatcher(options: {
     remember(lease);
     try {
       await heartbeat(lease);
+      // 已关联任务的条目直接沿用原 revision 查回同一个任务。issue 的 updatedAt
+      // 可能在分析期间变化（编辑/打标签），重新解析会算出新的去重键，导致每轮
+      // tick 新建任务并触发 item_already_linked。
+      if (typeof item.result?.taskId === "string" && typeof item.result.revision === "string") {
+        const linked = parseBatchSubject(repository.fullName, item.subject, item.reference);
+        const linkedKey = workbenchTaskDedupeKey({
+          repositoryId: repository.id,
+          taskType: linked.taskType,
+          number: linked.number,
+          revision: item.result.revision,
+          policyVersion:
+            linked.taskType === "pr_review"
+              ? PR_REVIEW_POLICY_VERSION
+              : ISSUE_ANALYSIS_POLICY_VERSION,
+        });
+        const existing = await tasks.find(linkedKey);
+        if (existing?.id === item.result.taskId) {
+          if (["completed", "failed", "canceled"].includes(existing.status)) {
+            summary[await finish(repository.fullName, batch, item, existing)] += 1;
+          }
+          return;
+        }
+      }
       // 版本需要在建立任务去重键前从 GitHub 读取；跨批次共享同一真实任务。
       const { parsed, revision, policyVersion } = await resolveRevision(
         repository,
