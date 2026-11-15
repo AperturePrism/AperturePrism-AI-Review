@@ -432,6 +432,45 @@ describe("batch dispatcher with durable workbench records", () => {
     expect(creates).toBe(1);
   });
 
+  it("keeps a task another active batch still waits for when one batch is canceled", async () => {
+    const canceled = await create();
+    const worker = dispatcher();
+    await worker.tick();
+    const task = [...tasks.values()][0]!;
+    expect(task.status).toBe("queued");
+    const running = await call<Batch>("batches.create", {
+      name: "rerun",
+      concurrency: 1,
+      items: [{ id: "again", subject: "pr#7", reference: "current" }],
+    });
+    await call("batches.start", { id: running.id });
+    await worker.tick();
+    expect((await read(running)).items[0]?.result?.taskId).toBe(task.id);
+    await call("batches.cancel", { id: canceled.id });
+
+    const first = await worker.tick();
+    expect(first.canceled).toBe(0);
+    expect(task.status).toBe("queued");
+
+    // 真实现场：条目租约过期后重新领取（attempts=2），关联记录仍是第 1 次派发。
+    now = new Date(now.getTime() + 61_000);
+    await worker.tick();
+    expect((await read(running)).items[0]).toMatchObject({
+      status: "running",
+      attempts: 2,
+      result: { taskId: task.id, dispatchAttempt: 1 },
+    });
+
+    // 真实任务被外部取消时，只能由仍等待它的批次复活一次，而不是被已取消
+    // 批次每轮反复取消（issue #42/#41 的 5 秒 cancel/retry 死循环）。
+    task.status = "canceled";
+    const revived = await worker.tick();
+    expect(revived.canceled).toBe(0);
+    expect(task.status).toBe("queued");
+    expect(retries).toBe(1);
+    expect(creates).toBe(1);
+  });
+
   it("does not dispatch workbench repositories outside the installed repository set", async () => {
     const hidden = await call<Batch>(
       "batches.create",

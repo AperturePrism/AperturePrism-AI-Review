@@ -691,6 +691,7 @@ export function createWorkbenchBatchDispatcher(options: {
     for (const repository of installed) {
       if (signal.aborted) break;
       summary.repositories += 1;
+      const batches: Batch[] = [];
       let offset = 0;
       while (!signal.aborted) {
         const page = await execute<{ items: Batch[]; total: number }>(
@@ -698,58 +699,72 @@ export function createWorkbenchBatchDispatcher(options: {
           "batches.list",
           { limit: 1_000, offset },
         );
-        for (const batch of page.items) {
-          summary.batches += 1;
-          if (batch.status === "canceled") {
-            for (const item of batch.items) {
-              forget({
-                repository: repository.fullName,
-                batchId: batch.id,
-                itemId: item.id,
-              });
-              // 跨批次任务没有批次专用键；取消只依据已 durable 关联的真实任务 id。
-              const taskId =
-                typeof item.result?.taskId === "string"
-                  ? item.result.taskId
-                  : null;
-              if (
-                taskId &&
-                (await tasks.cancel(taskId, "workbench batch canceled"))
-              )
-                summary.canceled += 1;
-            }
-            continue;
-          }
-          for (const item of batch.items) {
-            if (item.status === "running" && item.worker === workerId)
-              await dispatchOwned(repository, batch, item, summary);
-          }
-          if (
-            !["queued", "running"].includes(batch.status) ||
-            summary.claimed >= maxDispatch
-          )
-            continue;
-          while (!signal.aborted && summary.claimed < maxDispatch) {
-            const claimed = await execute<{
-              batch: Batch;
-              item: BatchItem | null;
-            }>(repository.fullName, "batches.claim", {
-              id: batch.id,
-              worker: workerId,
-              leaseMs,
-            });
-            if (!claimed.item) break;
-            summary.claimed += 1;
-            await dispatchOwned(
-              repository,
-              claimed.batch,
-              claimed.item,
-              summary,
-            );
-          }
-        }
+        batches.push(...page.items);
         offset += page.items.length;
         if (offset >= page.total || page.items.length === 0) break;
+      }
+      summary.batches += batches.length;
+      // 跨批次去重让多个批次共用同一个真实任务。已取消批次不能取消仍被其它
+      // 活跃批次等待的任务：否则取消联动与批次复活每轮互相覆盖，任务永远
+      // 领不到执行（issue #42/#41 现场）。
+      const referenced = new Set<string>();
+      for (const batch of batches) {
+        if (batch.status === "canceled") continue;
+        for (const item of batch.items) {
+          if (typeof item.result?.taskId === "string")
+            referenced.add(item.result.taskId);
+        }
+      }
+      for (const batch of batches) {
+        if (signal.aborted) break;
+        if (batch.status === "canceled") {
+          for (const item of batch.items) {
+            forget({
+              repository: repository.fullName,
+              batchId: batch.id,
+              itemId: item.id,
+            });
+            // 跨批次任务没有批次专用键；取消只依据已 durable 关联的真实任务 id。
+            const taskId =
+              typeof item.result?.taskId === "string"
+                ? item.result.taskId
+                : null;
+            if (
+              taskId &&
+              !referenced.has(taskId) &&
+              (await tasks.cancel(taskId, "workbench batch canceled"))
+            )
+              summary.canceled += 1;
+          }
+          continue;
+        }
+        for (const item of batch.items) {
+          if (item.status === "running" && item.worker === workerId)
+            await dispatchOwned(repository, batch, item, summary);
+        }
+        if (
+          !["queued", "running"].includes(batch.status) ||
+          summary.claimed >= maxDispatch
+        )
+          continue;
+        while (!signal.aborted && summary.claimed < maxDispatch) {
+          const claimed = await execute<{
+            batch: Batch;
+            item: BatchItem | null;
+          }>(repository.fullName, "batches.claim", {
+            id: batch.id,
+            worker: workerId,
+            leaseMs,
+          });
+          if (!claimed.item) break;
+          summary.claimed += 1;
+          await dispatchOwned(
+            repository,
+            claimed.batch,
+            claimed.item,
+            summary,
+          );
+        }
       }
     }
     return summary;
