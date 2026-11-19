@@ -13,7 +13,7 @@ export const consolePages: ConsolePage[] = [
   },
 ];
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   bumpCache,
   deleteProvider,
@@ -61,6 +61,9 @@ function AddProviderForm({
 }) {
   const toast = useToast();
   const apiKeyId = useId();
+  const modelId = useId();
+  const modelField = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
+  const [modelMissing, setModelMissing] = useState(false);
   const [open, setOpen] = useState(!!initial);
   const [provider, setProvider] = useState(initial?.provider ?? "");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
@@ -73,7 +76,13 @@ function AddProviderForm({
   const [probing, setProbing] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const changeModel = (value: string) => {
+    setModel(value);
+    if (value.trim()) setModelMissing(false);
+  };
+
   const reset = () => {
+    setModelMissing(false);
     setProvider("");
     setBaseUrl("");
     setApiKey("");
@@ -93,7 +102,8 @@ function AddProviderForm({
   // 服务端只允许用已存密钥访问已保存的 Base URL（saved_provider_url_changed）。
   // 编辑时改了地址又沿用旧密钥，必须先保存或用新密钥验证，这里提前拦住。
   const savedUrlChanged =
-    editing && normalizeBaseUrl(baseUrl) !== normalizeBaseUrl(initial?.baseUrl ?? "");
+    editing &&
+    normalizeBaseUrl(baseUrl) !== normalizeBaseUrl(initial?.baseUrl ?? "");
   const mustSaveBeforeProbe = savedUrlChanged && keepingSavedKey;
 
   // 拉取模型列表既是便利，也是对 baseUrl/apiKey 的一次连通性验证。
@@ -127,7 +137,8 @@ function AddProviderForm({
       if (list.length === 0) toast.info("连接成功，但该地址未返回可用模型");
       else {
         toast.success(`已获取 ${list.length} 个模型`);
-        setModel((current) => current || (list[0] ?? ""));
+        setModel((current) => current.trim() || (list[0] ?? ""));
+        setModelMissing(false);
       }
     } catch (err) {
       toast.error(`获取模型列表失败：${explainUnknown(err)}`);
@@ -144,8 +155,15 @@ function AddProviderForm({
       model: model.trim() || (models[0] ?? ""),
       ...(accountName.trim() ? { accountName: accountName.trim() } : {}),
     };
-    if (!payload.provider || !payload.baseUrl || !payload.model) {
-      toast.error("Provider、Base URL 与模型均为必填");
+    if (!payload.provider || !payload.baseUrl) {
+      toast.error(
+        !payload.provider ? "请填写 Provider 标识" : "请填写 Base URL",
+      );
+      return;
+    }
+    if (!payload.model) {
+      setModelMissing(true);
+      modelField.current?.focus();
       return;
     }
     if (!editing && !payload.apiKey) {
@@ -299,13 +317,26 @@ function AddProviderForm({
               : "仅显示本次输入的新密钥；留空或点「保留原密钥」不会修改已保存的密钥。"}
           </p>
         ) : null}
+        <label htmlFor={modelId}>模型名（必填）</label>
+        <p id={`${modelId}-hint`} className="faint" style={{ margin: 0 }}>
+          {modelMissing
+            ? "请填写模型名，或点击「获取模型列表」后选择模型。"
+            : "可直接输入模型名，也可点击「获取模型列表」后选择。"}
+        </p>
         <div className="filters">
           {models.length > 0 ? (
             <select
               className="input"
               style={{ flex: "1 1 260px" }}
+              id={modelId}
+              ref={(element) => {
+                modelField.current = element;
+              }}
+              aria-required="true"
+              aria-invalid={modelMissing}
+              aria-describedby={`${modelId}-hint`}
               value={model}
-              onChange={(e) => setModel(e.target.value)}
+              onChange={(e) => changeModel(e.target.value)}
             >
               {models.map((name) => (
                 <option key={name} value={name}>
@@ -318,8 +349,15 @@ function AddProviderForm({
               className="input"
               style={{ flex: "1 1 260px" }}
               placeholder="模型名，如 gpt-4o-mini（也可先获取列表）"
+              id={modelId}
+              ref={(element) => {
+                modelField.current = element;
+              }}
+              aria-required="true"
+              aria-invalid={modelMissing}
+              aria-describedby={`${modelId}-hint`}
               value={model}
-              onChange={(e) => setModel(e.target.value)}
+              onChange={(e) => changeModel(e.target.value)}
             />
           )}
           <input
