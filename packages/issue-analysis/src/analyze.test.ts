@@ -3,7 +3,6 @@ import type {
   ModelCandidate,
   ModelProviderAdapter,
 } from "../../../packages/domain/src/index.js";
-import type { GitHubClient } from "../../../packages/github-adapter/src/index.js";
 import type { IssueContext } from "./context.js";
 import type { IssueResultSection } from "./prompt.js";
 import { analyzeIssue, type IssueAnalyzerOptions } from "./analyze.js";
@@ -552,7 +551,7 @@ describe("deep issue analysis accounting", () => {
       signal: controller.signal,
       tools: {
         context: {
-          client: { getFileContents, listDirectory } as GitHubClient,
+          client: { getFileContents, listDirectory },
           installationId: "42",
           owner: "o",
           name: "r",

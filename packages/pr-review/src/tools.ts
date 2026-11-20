@@ -19,7 +19,7 @@ const logger = createLogger();
 
 /** 工具执行上下文：GitHub 只读访问 + 目标仓库定位。 */
 export type ToolExecutionContext = {
-  client: GitHubClient;
+  client: Pick<GitHubClient, "getFileContents" | "listDirectory">;
   installationId: string;
   owner: string;
   name: string;
