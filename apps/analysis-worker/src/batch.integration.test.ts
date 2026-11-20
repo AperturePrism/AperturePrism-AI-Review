@@ -154,9 +154,10 @@ integration("workbench batch PostgreSQL dispatch", () => {
   });
 
   it("persists a genuine task then completes the batch from the task's terminal state", async () => {
+    const pullNumber = 6;
     const batch = await execute<Batch>("batches.create", {
       name: "PG review",
-      items: [{ id: "pr", subject: "pr#7", reference: "current" }],
+      items: [{ id: "pr", subject: `pr#${pullNumber}`, reference: "current" }],
     });
     await execute("batches.start", { id: batch.id });
     expect((await dispatcher.tick()).dispatched).toBe(1);
@@ -165,7 +166,7 @@ integration("workbench batch PostgreSQL dispatch", () => {
       workbenchTaskDedupeKey({
         repositoryId,
         taskType: "pr_review",
-        number: 7,
+        number: pullNumber,
         revision: sha,
         policyVersion: PR_REVIEW_POLICY_VERSION,
       }),
@@ -177,7 +178,7 @@ integration("workbench batch PostgreSQL dispatch", () => {
       payload: {
         sourceEvent: "workbench_batch",
         repositoryFullName: repository,
-        subjectNumber: 7,
+        subjectNumber: pullNumber,
       },
     });
     await dispatcher.tick();
