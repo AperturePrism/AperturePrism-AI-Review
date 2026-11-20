@@ -35,6 +35,7 @@ function makeGithub(): GitHubClient {
     pingAppWebhook: async () => undefined,
     listRecentWebhookDeliveries: async () => [],
     listIssueComments: async () => [],
+    getIssueComment: async () => ({ id: 1, body: "" }),
     createIssueComment: async () => ({ id: 1, htmlUrl: "" }),
     closeIssue: async () => undefined,
     deleteIssue: async () => undefined,

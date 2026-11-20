@@ -372,6 +372,15 @@ export type GitHubClient = {
     },
     signal?: AbortSignal,
   ) => Promise<GitHubIssueComment[]>;
+  getIssueComment: (
+    input: {
+      installationId: string;
+      owner: string;
+      name: string;
+      commentId: number;
+    },
+    signal?: AbortSignal,
+  ) => Promise<Pick<GitHubIssueComment, "id" | "body">>;
   createIssueComment: (
     input: {
       installationId: string;
@@ -633,6 +642,8 @@ function categorizeStatus(
   );
 }
 
+const REQUEST_TIMEOUT_MS = 15_000;
+
 export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = (options.apiBaseUrl ?? "https://api.github.com").replace(
@@ -653,9 +664,15 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
       rawText?: boolean | undefined;
     },
   ): Promise<T> => {
-    let response: Response;
+    // Keep the deadline active through body consumption, not just until headers.
+    const timeout = new AbortController();
+    const signal = init.signal
+      ? AbortSignal.any([init.signal, timeout.signal])
+      : timeout.signal;
+    const timer = setTimeout(() => timeout.abort(), REQUEST_TIMEOUT_MS);
     try {
-      response = await fetchImpl(`${baseUrl}${path}`, {
+      signal.throwIfAborted();
+      const response = await fetchImpl(`${baseUrl}${path}`, {
         method: init.method,
         headers: {
           accept: init.accept ?? "application/vnd.github+json",
@@ -666,35 +683,45 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
             : { "content-type": "application/json" }),
         },
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-        ...(init.signal === undefined ? {} : { signal: init.signal }),
+        signal,
       });
+      signal.throwIfAborted();
+      if (!response.ok) {
+        // Only the headers are used for error categorization; do not leave the
+        // unused error stream consuming a connection.
+        void response.body?.cancel().catch(() => {});
+        throw categorizeStatus(
+          response.status,
+          retryAfterMs(response.headers),
+          response.headers.get("x-ratelimit-remaining"),
+        );
+      }
+      if (response.status === 204) return null as T;
+      const body = await response.text();
+      signal.throwIfAborted();
+      if (init.rawText) return body as T;
+      try {
+        return JSON.parse(body) as T;
+      } catch {
+        throw new GitHubApiError(
+          "invalid_request",
+          "GitHub response was not JSON",
+          response.status,
+        );
+      }
     } catch (error) {
       if (init.signal?.aborted)
         throw new GitHubApiError("canceled", "request was canceled", null);
+      if (timeout.signal.aborted)
+        throw new GitHubApiError("network", "GitHub request timed out", null);
+      if (error instanceof GitHubApiError) throw error;
       throw new GitHubApiError(
         "network",
         error instanceof Error ? error.message : "GitHub request failed",
         null,
       );
-    }
-
-    if (!response.ok) {
-      throw categorizeStatus(
-        response.status,
-        retryAfterMs(response.headers),
-        response.headers.get("x-ratelimit-remaining"),
-      );
-    }
-    if (init.rawText) return (await response.text()) as T;
-    if (response.status === 204) return null as T;
-    try {
-      return (await response.json()) as T;
-    } catch {
-      throw new GitHubApiError(
-        "invalid_request",
-        "GitHub response was not JSON",
-        response.status,
-      );
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -1364,6 +1391,22 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
         signal,
       );
       return comments.map(mapComment);
+    },
+
+    getIssueComment: async (
+      { installationId, owner, name, commentId },
+      signal,
+    ) => {
+      const comment = await authorized<Record<string, unknown>>(
+        installationId,
+        {
+          method: "GET",
+          path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/comments/${commentId}`,
+        },
+        signal,
+      );
+      const { id, body } = mapComment(comment);
+      return { id, body };
     },
 
     createIssueComment: async (

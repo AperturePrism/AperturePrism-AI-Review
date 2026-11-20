@@ -8,6 +8,43 @@ import type {
 } from "../../../packages/issue-analysis/src/index.js";
 import type { TaskExecution, TaskHandler } from "./loop.js";
 
+const REANALYSIS_TIMEOUT_MS = 5_000;
+const RELATED_ISSUES_TIMEOUT_MS = 30_000;
+
+/** Bound only read-only work. Never use this to detach an in-flight write. */
+export async function withIssueReadBudget<T>(
+  parent: AbortSignal,
+  timeoutMs: number,
+  read: (signal: AbortSignal) => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  parent.throwIfAborted();
+  const deadline = new AbortController();
+  const signal = AbortSignal.any([parent, deadline.signal]);
+  const timer = setTimeout(() => deadline.abort(), timeoutMs);
+  let onAbort: () => void = () => {};
+  try {
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    const work = Promise.resolve().then(() => {
+      signal.throwIfAborted();
+      return read(signal);
+    });
+    const result = await Promise.race([work, aborted]);
+    parent.throwIfAborted();
+    return result;
+  } catch (error) {
+    parent.throwIfAborted();
+    if (!deadline.signal.aborted) throw error;
+    return fallback;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export type SpamVerdict = {
   isSpam: boolean;
   reason: string;
@@ -23,7 +60,10 @@ export type IssueAnalysisServices = {
     task: LeasedTask,
     signal: AbortSignal,
   ) => Promise<IssueContext>;
-  publishPlaceholder: (task: LeasedTask, signal: AbortSignal) => Promise<void>;
+  publishPlaceholder: (
+    task: LeasedTask,
+    signal: AbortSignal,
+  ) => Promise<void | boolean>;
   /**
    * 分析失败时把占位评论改写为可诊断的说明。缺少它的话，占位会永远停在
    * 「正在分析」，用户看到的是一条误导性评论（NAS 上实测出现过）。
@@ -38,7 +78,10 @@ export type IssueAnalysisServices = {
     signal: AbortSignal,
   ) => Promise<IssueAnalysisOutcome>;
   /** Read-only RAG recall; index failure degrades to an empty list. */
-  recallRelated: (context: IssueContext) => Promise<RelatedIssueRow[]>;
+  recallRelated: (
+    context: IssueContext,
+    signal: AbortSignal,
+  ) => Promise<RelatedIssueRow[]>;
   publishFinal: (
     task: LeasedTask,
     analysis: GradedIssueAnalysis,
@@ -57,6 +100,7 @@ export type IssueAnalysisServices = {
   recordMemory?: (
     task: LeasedTask,
     analysis: GradedIssueAnalysis,
+    signal: AbortSignal,
   ) => Promise<void>;
   /**
    * Optional: ad/spam detection run after building the context, before any
@@ -91,6 +135,7 @@ export type IssueAnalysisServices = {
   shouldReanalyze?: (
     task: LeasedTask,
     context: IssueContext,
+    signal: AbortSignal,
   ) => Promise<boolean>;
 };
 
@@ -116,9 +161,14 @@ export function createIssueAnalysisHandler(
       // 值不值得重新分析先判：它只查一次数据库，比广告识别（一次模型调用）
       // 便宜得多。放在广告识别之前不会漏掉夹带广告的编辑 —— 塞进一段广告文本
       // 本身就是「实质改动」，不会低于变化幅度阈值。
-      if (services.shouldReanalyze) {
-        const reanalyze = await services.shouldReanalyze(task, context);
-        signal.throwIfAborted();
+      const { shouldReanalyze } = services;
+      if (shouldReanalyze) {
+        const reanalyze = await withIssueReadBudget(
+          signal,
+          REANALYSIS_TIMEOUT_MS,
+          (stageSignal) => shouldReanalyze(task, context, stageSignal),
+          true,
+        );
         if (!reanalyze) return { outcome: "completed" };
       }
 
@@ -155,8 +205,9 @@ export function createIssueAnalysisHandler(
       }
 
       signal.throwIfAborted();
-      await services.publishPlaceholder(task, signal);
+      const placeholder = await services.publishPlaceholder(task, signal);
       signal.throwIfAborted();
+      if (placeholder === false) return { outcome: "completed" };
 
       const outcome = await services.analyze(context, signal);
       signal.throwIfAborted();
@@ -177,7 +228,12 @@ export function createIssueAnalysisHandler(
 
       let related: RelatedIssueRow[] = [];
       try {
-        related = await services.recallRelated(context);
+        related = await withIssueReadBudget(
+          signal,
+          RELATED_ISSUES_TIMEOUT_MS,
+          (stageSignal) => services.recallRelated(context, stageSignal),
+          [],
+        );
       } catch {
         signal.throwIfAborted();
         // The index is an enhancement, never a blocker for the core analysis.
@@ -194,7 +250,7 @@ export function createIssueAnalysisHandler(
       await services.publishFinal(task, outcome.analysis, related, signal);
       signal.throwIfAborted();
       try {
-        await services.recordMemory?.(task, outcome.analysis);
+        await services.recordMemory?.(task, outcome.analysis, signal);
       } catch {
         signal.throwIfAborted();
         // Memory recording is best-effort; never blocks or fails the task.

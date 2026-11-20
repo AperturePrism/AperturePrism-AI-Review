@@ -472,6 +472,12 @@ export async function analyzeIssue(
     : "disabled";
   let mainContent: string;
   if (options.tools) {
+    // Model routing bounds each invocation; the same analysis budget must also
+    // stop repository reads between model rounds.
+    const toolDeadline = AbortSignal.timeout(Math.ceil(remainingMsFrom()));
+    const toolSignal = options.signal
+      ? AbortSignal.any([options.signal, toolDeadline])
+      : toolDeadline;
     const loop = await runToolLoop(
       (request) =>
         invokeOnceWithEmptyRetry(request).then((result) => result.response),
@@ -484,6 +490,7 @@ export async function analyzeIssue(
       ),
       options.tools.context,
       {
+        signal: toolSignal,
         tools: builtinTools(),
         exploreInstruction:
           "你可以调用 read_file / list_directory / get_git_info 查看仓库源码，" +

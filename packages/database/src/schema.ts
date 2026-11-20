@@ -265,6 +265,7 @@ export const externalPublications = pgTable(
     checkRunCompletedAt: timestamp("check_run_completed_at", {
       withTimezone: true,
     }),
+    issueCommentPendingAttemptId: uuid("issue_comment_pending_attempt_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -280,6 +281,11 @@ export const externalPublications = pgTable(
       .on(table.updatedAt, table.id)
       .where(
         sql`${table.channel} = 'check_run' and ${table.checkRunCompletedAt} is null`,
+      ),
+    index("external_publications_pending_issue_comment_idx")
+      .on(table.updatedAt, table.id)
+      .where(
+        sql`${table.channel} = 'github_issue_comment' and ${table.issueCommentPendingAttemptId} is not null`,
       ),
   ],
 );

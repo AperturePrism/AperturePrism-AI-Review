@@ -89,8 +89,10 @@ export async function collectIssueImages(
   opts: {
     fetchImpl?: ImageFetch;
     limits?: Partial<IssueImageLimits>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<CollectedImages> {
+  opts.signal?.throwIfAborted();
   const limits = { ...ISSUE_IMAGE_LIMITS, ...(opts.limits ?? {}) } as IssueImageLimits;
   const fetchImpl: ImageFetch = opts.fetchImpl ?? fetch;
   const images: ModelImagePart[] = [];
@@ -120,17 +122,26 @@ export async function collectIssueImages(
       attempt < limits.downloadAttempts && buffer === null;
       attempt += 1
     ) {
+      opts.signal?.throwIfAborted();
       const controller = new AbortController();
+      const signal = opts.signal
+        ? AbortSignal.any([opts.signal, controller.signal])
+        : controller.signal;
       const timer = setTimeout(() => controller.abort(), limits.fetchTimeoutMs);
-      let response: Response;
       try {
-        response = await fetchImpl(url, { signal: controller.signal });
+        const response = await fetchImpl(url, { signal });
+        signal.throwIfAborted();
         if (response.ok) {
-          buffer = new Uint8Array(await response.arrayBuffer());
+          const bytes = await response.arrayBuffer();
+          signal.throwIfAborted();
+          buffer = new Uint8Array(bytes);
           downloadResult = "ok";
+        } else {
+          void response.body?.cancel().catch(() => {});
         }
       } catch {
-        // transient; retry
+        opts.signal?.throwIfAborted();
+        // A per-download failure is transient; retry within the outer budget.
       } finally {
         // fetch resolves at headers; keep the deadline while reading the body.
         clearTimeout(timer);

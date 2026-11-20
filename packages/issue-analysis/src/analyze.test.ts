@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   ModelCandidate,
   ModelProviderAdapter,
 } from "../../../packages/domain/src/index.js";
+import type { GitHubClient } from "../../../packages/github-adapter/src/index.js";
 import type { IssueContext } from "./context.js";
 import type { IssueResultSection } from "./prompt.js";
 import { analyzeIssue, type IssueAnalyzerOptions } from "./analyze.js";
@@ -528,6 +529,42 @@ describe("按类别分组的 Issue 结果区块 (#28)", () => {
 });
 
 describe("deep issue analysis accounting", () => {
+  it("cancels an in-flight repository tool without running more tools or model rounds", async () => {
+    const controller = new AbortController();
+    const invoke = vi.fn(async () => ({
+      content: "",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      toolCalls: [
+        { id: "read-1", name: "read_file", arguments: '{"path":"src/main.ts"}' },
+        { id: "list-1", name: "list_directory", arguments: "{}" },
+      ],
+    }));
+    const getFileContents = vi.fn(async (_input: unknown, signal?: AbortSignal) => {
+      expect(signal?.aborted).toBe(false);
+      controller.abort();
+      expect(signal?.aborted).toBe(true);
+      throw new Error("transport canceled");
+    });
+    const listDirectory = vi.fn();
+
+    await expect(analyzeIssue({
+      ...options([{ provider: candidate.provider, invoke }], [candidate]),
+      signal: controller.signal,
+      tools: {
+        context: {
+          client: { getFileContents, listDirectory } as GitHubClient,
+          installationId: "42",
+          owner: "o",
+          name: "r",
+          ref: "HEAD",
+        },
+      },
+    }, context)).rejects.toMatchObject({ name: "AbortError" });
+    expect(getFileContents).toHaveBeenCalledTimes(1);
+    expect(listDirectory).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it("starts with the tool request and counts every exploration invocation", async () => {
     let calls = 0;
     const adapter: ModelProviderAdapter = {

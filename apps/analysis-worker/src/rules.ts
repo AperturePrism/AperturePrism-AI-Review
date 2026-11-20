@@ -9,6 +9,7 @@ import {
 } from "../../../packages/config/src/index.js";
 import { loadSettings } from "../../../packages/database/src/index.js";
 import { fetchExternalRepoRulesText } from "./external-repo-rules.js";
+import { withIssueReadBudget } from "./handler.js";
 import { resolveIssueSettings } from "./preferences.js";
 import { createReviewRulesLoader } from "./review-rules.js";
 import { database, logger } from "./runtime.js";
@@ -53,13 +54,17 @@ export const loadRepoRules = createReviewRulesLoader({
 async function fetchExternalRepoRules(
   repoFullName: string,
   signal?: AbortSignal,
+  settingsReadTimeoutMs?: number,
 ): Promise<string | undefined> {
   let url = "";
   try {
-    const settings = await resolveIssueSettings(repoFullName, [
-      "repo_rules_url",
-    ]);
-    url = String(settings.get("repo_rules_url") ?? "").trim();
+    const readUrl = async () => {
+      const settings = await resolveIssueSettings(repoFullName, ["repo_rules_url"]);
+      return String(settings.get("repo_rules_url") ?? "").trim();
+    };
+    url = signal && settingsReadTimeoutMs !== undefined
+      ? await withIssueReadBudget(signal, settingsReadTimeoutMs, readUrl, "")
+      : await readUrl();
   } catch (error) {
     logger.warn(
       { err: error, repo: repoFullName },
