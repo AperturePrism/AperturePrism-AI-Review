@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createGitHubClient, GitHubApiError } from "./client.js";
 
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -277,6 +277,55 @@ describe("GitHub API client", () => {
     }
   });
 
+  it.each(["deadline", "caller abort"])(
+    "cancels a stalled comment write response body on %s without retrying",
+    async (mode) => {
+      vi.useFakeTimers();
+      try {
+        const controller = new AbortController();
+        let transportSignal: AbortSignal | null | undefined;
+        let readingBody = false;
+        const { client, calls } = clientWith(withToken(({ init }) => {
+          transportSignal = init.signal;
+          const encoder = new TextEncoder();
+          return new Response(new ReadableStream<Uint8Array>({
+            start(stream) {
+              stream.enqueue(encoder.encode('{"id":'));
+              init.signal?.addEventListener("abort", () => stream.error(init.signal?.reason), { once: true });
+            },
+            pull() {
+              readingBody = true;
+            },
+          }));
+        }));
+        const pending = client.createIssueComment({
+          installationId: "42",
+          owner: "o",
+          name: "r",
+          number: 7,
+          body: "placeholder",
+        }, controller.signal);
+        const result = expect(pending).rejects.toMatchObject(mode === "deadline"
+          ? { category: "network", message: "GitHub request timed out" }
+          : { category: "canceled" });
+
+        await vi.advanceTimersByTimeAsync(0);
+        expect(readingBody).toBe(true);
+        expect(transportSignal?.aborted).toBe(false);
+        if (mode === "deadline") await vi.advanceTimersByTimeAsync(15_000);
+        else controller.abort();
+
+        await result;
+        expect(transportSignal?.aborted).toBe(true);
+        expect(calls).toHaveLength(2);
+        expect(calls[1]?.init.method).toBe("POST");
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("fetches and maps a pull request", async () => {
     const { client, calls } = clientWith(
       withToken(() =>
@@ -476,7 +525,9 @@ describe("installation repository pagination", () => {
     expect(repos.at(-1)).toEqual({ id: 101, owner: "o", name: "r101", fullName: "o/r101" });
     const requests = calls.filter((call) => call.url.includes("/installation/repositories"));
     expect(requests.map((call) => new URL(call.url).search)).toEqual(["?per_page=100&page=1", "?per_page=100&page=2"]);
-    expect(requests.every((call) => call.init.signal === controller.signal)).toBe(true);
+    expect(requests.every((call) => call.init.signal?.aborted === false)).toBe(true);
+    controller.abort();
+    expect(requests.every((call) => call.init.signal?.aborted)).toBe(true);
   });
 
   it("stops after an empty first page", async () => {

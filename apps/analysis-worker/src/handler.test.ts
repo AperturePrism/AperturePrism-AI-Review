@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   GradedIssueAnalysis,
   IssueAnalysisResult,
@@ -239,6 +239,48 @@ describe("issue analysis handler", () => {
       "recallRelated",
       "publishFinal",
     ]);
+  });
+
+  it("skips analysis, usage, and publication when the placeholder is stale", async () => {
+    const beginPublishing = vi.fn(async () => true);
+    const { services, calls } = makeServices({
+      publishPlaceholder: async () => false,
+    });
+
+    await expect(
+      createIssueAnalysisHandler(services)(leasedTask(), neverAbort, { beginPublishing }),
+    ).resolves.toEqual({ outcome: "completed" });
+    expect(calls()).toEqual(["buildContext"]);
+    expect(beginPublishing).not.toHaveBeenCalled();
+  });
+
+  it("publishes without related issues when recall stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const publishFinal = vi.fn<IssueAnalysisServices["publishFinal"]>();
+      let recallSignal: AbortSignal | undefined;
+      const { services } = makeServices({
+        recallRelated: (_context, signal) => {
+          recallSignal = signal;
+          // Simulates an index query that does not cooperatively cancel.
+          return new Promise(() => {});
+        },
+        publishFinal,
+      });
+      const task = leasedTask();
+      const result = createIssueAnalysisHandler(services)(task, neverAbort);
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(recallSignal?.aborted).toBe(false);
+      expect(publishFinal).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(result).resolves.toEqual({ outcome: "completed" });
+      expect(recallSignal?.aborted).toBe(true);
+      expect(publishFinal).toHaveBeenCalledWith(task, gradedAnalysis, [], neverAbort);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("degrades gracefully when the related-issue recall fails", async () => {
