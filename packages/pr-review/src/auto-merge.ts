@@ -1,5 +1,5 @@
 /** 自动合并资格只来自服务器保存的审查评估，不能由模型单独声明通过。 */
-import { prReviewContractSchema } from "./types.js";
+import { prReviewContractSchema, type PrReviewContract } from "./types.js";
 
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -13,12 +13,19 @@ export function reviewAllowsAutoMerge(result: unknown): boolean {
   if (!saved) return false;
   const { assessment: rawAssessment, ...contract } = saved;
   const parsed = prReviewContractSchema.safeParse(contract);
-  if (
-    !parsed.success ||
-    parsed.data.overallTone !== "approve" ||
-    parsed.data.findings.length
-  )
-    return false;
+  return (
+    parsed.success &&
+    parsed.data.overallTone === "approve" &&
+    hasCompleteCleanAssessment(parsed.data, rawAssessment)
+  );
+}
+
+/** Validates the persisted assessment independently of the GitHub review tone. */
+export function hasCompleteCleanAssessment(
+  review: PrReviewContract,
+  rawAssessment: unknown,
+): boolean {
+  if (review.findings.length) return false;
   const assessment = object(rawAssessment);
   const assessedReview = prReviewContractSchema.safeParse(assessment?.review);
   const coverage = object(assessment?.coverage);
@@ -27,7 +34,7 @@ export function reviewAllowsAutoMerge(result: unknown): boolean {
   return (
     assessment?.version === "review-assessment/v1" &&
     assessedReview.success &&
-    JSON.stringify(assessedReview.data) === JSON.stringify(parsed.data) &&
+    JSON.stringify(assessedReview.data) === JSON.stringify(review) &&
     gate?.status === "passed" &&
     coverage?.changedLineRatio === 1 &&
     Number.isInteger(coverage?.totalFiles) &&

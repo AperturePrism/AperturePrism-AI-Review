@@ -7,8 +7,11 @@ import {
 } from "../../../packages/github-adapter/src/index.js";
 import { reconcileCheckRuns, terminalCheckRunOutput } from "./check-runs.js";
 import { assessReview } from "../../../packages/pr-review/src/assessment.js";
+import { reviewAllowsAutoMerge } from "../../../packages/pr-review/src/auto-merge.js";
 import { renderDiffForModel } from "../../../packages/pr-review/src/context.js";
 import { parseUnifiedDiff } from "../../../packages/pr-review/src/diff.js";
+import { reviewEventTone } from "../../../packages/pr-review/src/publish.js";
+import type { PrReviewContract } from "../../../packages/pr-review/src/types.js";
 
 const payload = {
   installationId: "42",
@@ -121,56 +124,77 @@ function harness(status: "completed" | "failed" | "canceled" = "completed") {
   };
 }
 
+function assessedResult(overallTone: PrReviewContract["overallTone"]) {
+  const contract = {
+    ...review,
+    contractVersion: "pr-review/v1" as const,
+    overallTone,
+  };
+  const context = renderDiffForModel(
+    parseUnifiedDiff(
+      "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-export const a = 1;\n+export const a = 2;\n",
+    ),
+  );
+  return { ...contract, assessment: assessReview(contract, context) };
+}
+
 describe("terminalCheckRunOutput", () => {
-  it("reads the persisted review envelope and respects gate, complete coverage and hidden findings", () => {
-    const context = renderDiffForModel(
-      parseUnifiedDiff(
-        "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-export const a = 1;\n+export const a = 2;\n",
-      ),
-    );
-    const approved = {
-      ...review,
-      contractVersion: "pr-review/v1" as const,
-      overallTone: "approve" as const,
-    };
-    const assessment = assessReview(approved, context);
-    expect(
-      terminalCheckRunOutput("completed", { ...approved, assessment }, null)
-        .conclusion,
-    ).toBe("success");
-    expect(
-      terminalCheckRunOutput(
-        "completed",
-        {
-          ...approved,
-          assessment: {
-            ...assessment,
-            gate: { ...assessment.gate, status: "failed" },
-          },
-        },
-        null,
-      ).conclusion,
-    ).toBe("failure");
-    expect(
-      terminalCheckRunOutput(
-        "completed",
-        {
-          ...approved,
-          assessment: {
-            ...assessment,
-            coverage: { ...assessment.coverage, changedLineRatio: 0.5 },
-          },
-        },
-        null,
-      ).conclusion,
-    ).toBe("neutral");
-    expect(
-      terminalCheckRunOutput(
-        "completed",
-        { ...approved, assessment: { ...assessment, excluded: [{}] } },
-        null,
-      ).conclusion,
-    ).toBe("neutral");
+  it.each(["approve", "comment"] as const)(
+    "succeeds for a complete, clean %s review",
+    (tone) => {
+      expect(
+        terminalCheckRunOutput("completed", assessedResult(tone), null),
+      ).toMatchObject({ conclusion: "success", title: "未发现明显问题" });
+    },
+  );
+
+  it("does not treat a request for changes as successful without findings", () => {
+    const { assessment, ...contract } = assessedResult("changes_requested");
+    for (const result of [contract, { ...contract, assessment }]) {
+      expect(terminalCheckRunOutput("completed", result, null)).toMatchObject({
+        conclusion: "neutral",
+        title: "AI 审查要求修改",
+      });
+    }
+  });
+
+  it("fails a comment-only review when the gate failed", () => {
+    const result = assessedResult("comment");
+    result.assessment.gate.status = "failed";
+    expect(terminalCheckRunOutput("completed", result, null)).toMatchObject({
+      conclusion: "failure",
+      title: "AI 审查门禁未通过",
+    });
+  });
+
+  it("keeps degraded, filtered, suppressed and invalid assessments neutral", () => {
+    const result = assessedResult("comment");
+    const { assessment } = result;
+    for (const replacement of [
+      { ...assessment, gate: { ...assessment.gate, status: "incomplete" } },
+      {
+        ...assessment,
+        coverage: { ...assessment.coverage, changedLineRatio: 0.5 },
+      },
+      { ...assessment, excluded: [{}] },
+      {
+        ...assessment,
+        suppressions: { ...assessment.suppressions, suppressed: [{}] },
+      },
+      {
+        ...assessment,
+        review: { ...assessment.review, summary: "另一份审查" },
+      },
+      null,
+    ]) {
+      expect(
+        terminalCheckRunOutput(
+          "completed",
+          { ...result, assessment: replacement },
+          null,
+        ).conclusion,
+      ).toBe("neutral");
+    }
   });
   it.each(["failed", "canceled"] as const)(
     "uses the %s task state even if an old result exists",
@@ -193,6 +217,24 @@ describe("terminalCheckRunOutput", () => {
 });
 
 describe("reconcileCheckRuns", () => {
+  it("completes the Check Run successfully without changing the comment review event", async () => {
+    const test = harness();
+    const result = assessedResult("comment");
+    test.state.result = result;
+    expect(reviewEventTone(result.overallTone)).toBe("COMMENT");
+    expect(reviewAllowsAutoMerge(result)).toBe(false);
+    await expect(test.run()).resolves.toBe(1);
+    expect(test.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkRunId: 101,
+        status: "completed",
+        conclusion: "success",
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(test.state.acknowledged).toBe(true);
+  });
+
   it.each(["completed", "failed", "canceled"] as const)(
     "durably closes a %s task's pending Check Run",
     async (status) => {
