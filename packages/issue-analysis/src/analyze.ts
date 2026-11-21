@@ -36,11 +36,13 @@ import {
 export type IssueAnalysisReport = GradedIssueAnalysis & {
   triage?: IssueTriage;
   evidenceAudit?: EvidenceAudit;
+  sourceRead?: "unavailable";
 };
 import {
   buildIssueAnalysisMessages,
   buildIssueAnalysisRepairRequest,
   buildIssueAnalysisRequest,
+  CODE_ACCESS_UNKNOWN_PATH,
   type IssueResultSection,
   type PromptMode,
 } from "./prompt.js";
@@ -467,9 +469,13 @@ export async function analyzeIssue(
   };
 
   // 开启探索时直接进入工具循环，避免先花一次模型调用再丢弃其回答。
-  const codeAccess: "enabled" | "disabled" = options.tools
-    ? "enabled"
-    : "disabled";
+  const sourceFiles = new Map(
+    (context.preloadedFiles ?? [])
+      .filter((file) => file.content.trim())
+      .map((file) => [file.path, file]),
+  );
+  const codeAccess =
+    options.tools || sourceFiles.size > 0 ? "enabled" : "disabled";
   let mainContent: string;
   if (options.tools) {
     // Model routing bounds each invocation; the same analysis budget must also
@@ -488,16 +494,24 @@ export async function analyzeIssue(
         resolvePromptSections(options, context),
         codeAccess,
       ),
-      options.tools.context,
+      {
+        ...options.tools.context,
+        maxFileBytes: Math.min(
+          options.tools.context.maxFileBytes ?? 60_000,
+          60_000,
+        ),
+      },
       {
         signal: toolSignal,
         tools: builtinTools(),
+        requireSourceRead: true,
+        hasPreloadedSource: sourceFiles.size > 0,
         exploreInstruction:
           "你可以调用 read_file / list_directory / get_git_info 查看仓库源码，" +
           "以定位这个 Issue 涉及的真实代码位置（缺陷类：问题出在哪个文件；" +
           "功能请求 / enhancement 类：相关功能现状在哪个文件、改动应落在哪）。请先定位再作答：\n" +
-          '- 第一步必须用 list_directory 且 path 传空字符串 "" 查看仓库根目录，' +
-          "再据结果用相对路径进子目录；绝对路径与 /home/user/repos/... 这类仓库名/用户目录前缀一律无效，不要编造。\n" +
+          '- 已有明确路径时直接读取；否则用 list_directory 且 path 传空字符串 "" 查看仓库根目录，' +
+          "再据结果用相对路径进入子目录并用 read_file 读取实现。列目录本身不算读取源码。\n" +
           "- 优先读 README 等文档，理解该功能 / 命令 / 指令的正确使用与触发方式，" +
           "据此判断报告者的操作是否符合预期（很多「指令没反应 / 按钮不存在」其实是触发方式问题，先自查再下结论）。\n" +
           "- 如果用户点名要求检查某个文件或代码（如「检查 main.py 的 bug」），必须当场" +
@@ -515,6 +529,12 @@ export async function analyzeIssue(
       },
     );
     mainContent = loop.messages[loop.messages.length - 1]?.content ?? "";
+    for (const file of loop.sourceFiles) {
+      const previous = sourceFiles.get(file.path);
+      if (!previous || file.content.length >= previous.content.length) {
+        sourceFiles.set(file.path, file);
+      }
+    }
   } else {
     const result = await invokeOnceWithEmptyRetry(
       buildIssueAnalysisRequest(
@@ -532,21 +552,36 @@ export async function analyzeIssue(
     ...invocations.map((invocation) => invocation.response.usage),
   );
   const mainAttempts = invocations.flatMap((invocation) => invocation.attempts);
+  const evidenceContext = {
+    ...context,
+    preloadedFiles: [...sourceFiles.values()],
+  };
   const report = (analysis: GradedIssueAnalysis): IssueAnalysisReport => {
     const grounded = groundIssueAnalysis(
       analysis,
-      context,
+      evidenceContext,
       options.evidenceGrounding,
     );
+    if (options.tools) {
+      grounded.analysis.result.proposedChanges = (
+        grounded.analysis.result.proposedChanges ?? []
+      ).map((change) =>
+        sourceFiles.has(change.path)
+          ? change
+          : { path: CODE_ACCESS_UNKNOWN_PATH, change: change.change },
+      );
+    }
     return {
       ...grounded.analysis,
       evidenceAudit: grounded.audit,
       triage: assessIssueTriage(context, options.triagePolicy),
+      ...(options.tools && sourceFiles.size === 0
+        ? { sourceRead: "unavailable" as const }
+        : {}),
     };
   };
 
-  // exploredCode 决定服务端是否保留 proposedChanges 的行号定位。
-  const gradingOptions = { exploredCode: options.tools !== undefined };
+  const gradingOptions = { exploredCode: sourceFiles.size > 0 };
   const validation = parseIssueAnalysisJson(mainContent, gradingOptions);
   if (validation.outcome === "valid") {
     return {
@@ -568,14 +603,14 @@ export async function analyzeIssue(
   const repair = await routeModelInvocation(options.adapters, {
     candidates: options.candidates,
     request: buildIssueAnalysisRepairRequest(
-      context,
+      evidenceContext,
       // 修复要基于实际待修的那份输出：开启探索时是循环结果，而非被丢弃的首答。
       mainContent,
       validation.issues,
       options.promptVersion,
       options.promptMode,
       resolvePromptSections(options, context),
-      codeAccess,
+      sourceFiles.size > 0 ? "enabled" : "disabled",
     ),
     deadlineMs: remainingMs,
     retryPolicy: options.retryPolicy,

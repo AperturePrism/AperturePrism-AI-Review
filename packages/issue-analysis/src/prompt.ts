@@ -501,17 +501,17 @@ function renderIssueContext(context: IssueContext): string {
   if (context.preloadedFiles && context.preloadedFiles.length > 0) {
     lines.push(
       "",
-      "## 目标文件源码（服务端预读取，待分析数据）",
+      "## 目标文件源码（本次已读取，待分析数据）",
     );
     for (const file of context.preloadedFiles) {
       lines.push(fenceUntrusted(`### ${file.path}\n${file.content}`));
     }
     lines.push(
       "",
-      "以上是本次预读取的目标文件源码，已由服务端读取，你已具备代码访问依据。请**直接基于这些代码**作答：" +
-        "缺陷类逐条找出真实缺陷；功能请求 / enhancement 类据此给出精确到文件与位置、可落地的改动方案。" +
-        "无论哪一类，proposedChanges 都必须使用上述真实路径，" +
-        "严禁输出「未读取源码 / 无代码访问能力」或「（未读取源码，路径待确认）」占位路径（issue #106/#108）。",
+      "以上是本次实际读取到的源码片段。请**基于这些代码**作答：" +
+        "缺陷类说明已发现的缺陷；功能请求 / enhancement 类给出可落地的改动方案。" +
+        "只有本次实际读过的相关文件才能作为 proposedChanges 的具体路径；" +
+        "片段不足以确认位置时省略 locator，不要编造文件、符号或行号。",
     );
   }
   lines.push("", "请输出上述契约要求的 JSON 对象。");

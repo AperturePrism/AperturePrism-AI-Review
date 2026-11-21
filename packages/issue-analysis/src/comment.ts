@@ -84,6 +84,7 @@ export function buildIssueAnalysisComment(
   analysis: GradedIssueAnalysis & {
     triage?: IssueTriage;
     evidenceAudit?: EvidenceAudit;
+    sourceRead?: "unavailable";
   },
   related: readonly RelatedIssueRow[] = [],
 ): string {
@@ -99,6 +100,13 @@ export function buildIssueAnalysisComment(
     "### 摘要",
     result.summary,
   ];
+
+  if (analysis.sourceRead === "unavailable") {
+    lines.push(
+      "",
+      "> 本次深度分析未读到文件内容；以下是基于 Issue 描述的建议，不包含已核实的源码位置。",
+    );
+  }
 
   // 显示层标记：视觉/图片理解未参与（带图 Issue 在视觉模型不可用时回退文本）。
   if ((result as { _visionSkipped?: boolean })._visionSkipped) {

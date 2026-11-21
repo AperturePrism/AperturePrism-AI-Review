@@ -29,7 +29,25 @@ export type ToolExecutionContext = {
   maxFileBytes?: number;
 };
 
-export type ToolResult = { ok: boolean; content: string };
+type ToolSourceFile = { path: string; content: string };
+
+export type ToolResult = {
+  ok: boolean;
+  content: string;
+  /** 实际展示给模型的非空文件内容，不含工具截断提示。 */
+  sourceFile?: ToolSourceFile;
+};
+
+const MAX_FORCED_TOOL_NUDGES = 3;
+
+/** 截取 UTF-8 前缀，不在多字节字符中间截断。 */
+function boundFileContent(content: string, maxBytes: number): string {
+  if (Buffer.byteLength(content) <= maxBytes) return content;
+  const bytes = Buffer.from(content);
+  let end = Math.max(0, Math.floor(maxBytes));
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  return bytes.toString("utf8", 0, end);
+}
 
 /** 内置工具定义（暴露给模型的 JSON Schema）。 */
 export function builtinTools(): ModelToolSpec[] {
@@ -43,7 +61,8 @@ export function builtinTools(): ModelToolSpec[] {
         properties: {
           path: {
             type: "string",
-            description: "仓库内相对文件路径（如 src/main.ts，不含仓库名/绝对路径前缀）",
+            description:
+              "仓库内相对文件路径（如 src/main.ts，不含仓库名/绝对路径前缀）",
           },
         },
         required: ["path"],
@@ -52,7 +71,7 @@ export function builtinTools(): ModelToolSpec[] {
     {
       name: "list_directory",
       description:
-        "列出仓库中某个目录下的条目（文件名与子目录名）。要查看仓库根目录时，path 传空字符串 \"\"；要进入子目录就传相对路径（如 src）。绝不要传 / 开头的绝对路径或 /home/user/repos/... 这种用户目录前缀。",
+        '列出仓库中某个目录下的条目（文件名与子目录名）。要查看仓库根目录时，path 传空字符串 ""；要进入子目录就传相对路径（如 src）。绝不要传 / 开头的绝对路径或 /home/user/repos/... 这种用户目录前缀。',
       parameters: {
         type: "object",
         properties: {
@@ -83,7 +102,8 @@ function safePath(raw: string): string | null {
   // 去掉前导 / 与任何仓库名前缀式路径（绝对路径 / 绝对化前缀），统一成相对路径。
   const stripped = value.replace(/^\/+/, "");
   // 拒绝显式 user 目录前缀（常见于模型幻觉出 /home/... 后逐级往上列）。
-  if (/^(home|root|home\/[^/]+|var|tmp|usr|repos)(\/|$)/i.test(stripped)) return null;
+  if (/^(home|root|home\/[^/]+|var|tmp|usr|repos)(\/|$)/i.test(stripped))
+    return null;
   // 去掉 .. 组件（禁止跳出仓库根）。
   const hasDotDot = stripped.split("/").some((seg) => seg === "..");
   if (hasDotDot) return null;
@@ -115,7 +135,8 @@ export async function executeToolCall(
             content:
               "read_file: path 无效。必须传仓库内相对路径（如 desktop.py、src/main.ts），禁止绝对路径或 /home/... 等用户目录前缀。",
           };
-        if (path === "") return { ok: false, content: "read_file: 缺少 path 参数" };
+        if (path === "")
+          return { ok: false, content: "read_file: 缺少 path 参数" };
         const file = await ctx.client.getFileContents({
           installationId: ctx.installationId,
           owner: ctx.owner,
@@ -125,13 +146,25 @@ export async function executeToolCall(
         }, signal);
         signal?.throwIfAborted();
         if (!file)
-          return { ok: false, content: `read_file: 文件不存在或不是文件：${path}` };
-        const maxBytes = ctx.maxFileBytes ?? 200_000;
+          return {
+            ok: false,
+            content: `read_file: 文件不存在或不是文件：${path}`,
+          };
+        const sourceContent = boundFileContent(
+          file.content,
+          ctx.maxFileBytes ?? 200_000,
+        );
         const content =
-          file.content.length > maxBytes
-            ? `${file.content.slice(0, maxBytes)}\n…[已截断，文件较大]`
-            : file.content;
-        return { ok: true, content };
+          sourceContent.length < file.content.length
+            ? `${sourceContent}\n…[已截断，文件较大]`
+            : sourceContent;
+        return {
+          ok: true,
+          content,
+          ...(sourceContent.trim()
+            ? { sourceFile: { path, content: sourceContent } }
+            : {}),
+        };
       }
 
       case "list_directory": {
@@ -140,7 +173,7 @@ export async function executeToolCall(
           return {
             ok: false,
             content:
-              "list_directory: path 无效。传空字符串 \"\" 表示仓库根目录，进子目录用相对路径（如 src）；禁止绝对路径或 /home/... 等用户目录前缀。",
+              'list_directory: path 无效。传空字符串 "" 表示仓库根目录，进子目录用相对路径（如 src）；禁止绝对路径或 /home/... 等用户目录前缀。',
           };
         const entries = await ctx.client.listDirectory({
           installationId: ctx.installationId,
@@ -193,21 +226,32 @@ export type ToolLoopOptions = {
    * 代码审查 / 缺陷 / 功能请求任务均应开启。
    */
   forceToolUse?: boolean;
+  /** 强制读仓时，必须有非空文件内容，而不只是调用过工具（仅 Issue 使用）。 */
+  requireSourceRead?: boolean;
+  /** 初始消息已包含非空源码；可满足 requireSourceRead，但不计入本轮工具证据。 */
+  hasPreloadedSource?: boolean;
 };
 
 /**
  * 多轮 tool-calling 循环：不断把模型的 tool_calls 交给执行器并把结果回传，
- * 直到模型直接给出最终内容或达到最大轮数。返回最终消息序列与轮数。
+ * 直到模型直接给出最终内容或达到最大轮数。返回消息序列、轮数及实际读取的源码。
  */
 export async function runToolLoop(
   invoke: (request: ModelInvocationRequest) => Promise<ModelInvocationResponse>,
   messages: readonly ModelMessage[],
   ctx: ToolExecutionContext,
   options: ToolLoopOptions = {},
-): Promise<{ messages: ModelMessage[]; rounds: number }> {
+): Promise<{
+  messages: ModelMessage[];
+  rounds: number;
+  sourceFiles: ToolSourceFile[];
+}> {
   const tools = options.tools ?? builtinTools();
   const maxRounds = options.maxRounds ?? 6;
   const forceToolUse = options.forceToolUse ?? false;
+  const { requireSourceRead = false, hasPreloadedSource = false } = options;
+  const sourceFiles = new Map<string, ToolSourceFile>();
+  const missingSource = () => !hasPreloadedSource && sourceFiles.size === 0;
   let rounds = 0;
   // 强制读仓仅允许插入有限次，避免模型一直不配合时无限循环。
   let forcedCount = 0;
@@ -215,7 +259,10 @@ export async function runToolLoop(
   let current: ModelMessage[] = [...messages];
 
   if (options.exploreInstruction) {
-    current = [...current, { role: "user", content: options.exploreInstruction }];
+    current = [
+      ...current,
+      { role: "user", content: options.exploreInstruction },
+    ];
   }
 
   // 空响应重试：模型（如 kimi-k3）在工具循环中偶发返回「既无 content 也无
@@ -262,31 +309,39 @@ export async function runToolLoop(
     rounds += 1;
 
     if (!response.toolCalls || response.toolCalls.length === 0) {
-      // 强制读仓：模型在从没调用过任何工具时就打算收尾（往往输出"无法读取/无法
-      // 审查"这类逃避模板）。审查/缺陷任务必须让它真读仓后再作答。
-      if (forceToolUse && !sawToolCall && forcedCount < 3) {
+      // Issue 要求实际源码；PR 仍沿用是否调用过工具的判断。
+      const needsNudge =
+        forceToolUse && (requireSourceRead ? missingSource() : !sawToolCall);
+      if (
+        needsNudge &&
+        forcedCount < MAX_FORCED_TOOL_NUDGES &&
+        (!requireSourceRead || rounds < maxRounds)
+      ) {
         forcedCount += 1;
         current = [
           ...current,
           { role: "assistant", content: response.content ?? "" },
           {
             role: "user",
-            content:
-              "警告：你还没有调用任何读取工具就准备给出最终结论。这是一个要求读仓的任务，" +
-              "你必须先用 read_file 或 list_directory 读取相关文件后再作答（path 用仓库内相对路径，" +
-              "根目录传空字符串，不要用绝对路径），不要在结论中说「无代码访问能力」，" +
-              "也不要输出「未读取源码，路径待确认」占位路径。" +
-              "请现在立刻调用工具。",
+            content: requireSourceRead
+              ? "尚未取得非空源码。目录清单、Git 元数据和读取失败不算源码。" +
+                "请现在用 read_file 读取相关文件（path 用仓库内相对路径）；" +
+                "若最终仍未读到源码，请如实说明，不要虚构文件路径或行号。"
+              : "警告：你还没有调用任何读取工具就准备给出最终结论。这是一个要求读仓的任务，" +
+                "你必须先用 read_file 或 list_directory 读取相关文件后再作答（path 用仓库内相对路径，" +
+                "根目录传空字符串，不要用绝对路径），不要在结论中说「无代码访问能力」，" +
+                "也不要输出「未读取源码，路径待确认」占位路径。" +
+                "请现在立刻调用工具。",
           },
         ];
         continue;
       }
-      if (forceToolUse && !sawToolCall) {
-        // issue #106/#108：强制轮次用尽仍不调工具时必须留痕——这是"enhancement 类
-        // issue 不读源码"的直接证据，运维可据此定位是模型不配合还是网关不支持 tools。
+      if (needsNudge) {
         logger.warn(
           { owner: ctx.owner, name: ctx.name, rounds, forcedCount },
-          "deep tool loop: model refused to call tools after forced rounds",
+          requireSourceRead
+            ? "deep tool loop: no source read before finishing"
+            : "deep tool loop: model refused to call tools after forced rounds",
         );
       }
       logger.info(
@@ -294,12 +349,21 @@ export async function runToolLoop(
         "deep tool loop finished without tool calls",
       );
       current = [...current, { role: "assistant", content: response.content }];
-      return { messages: current, rounds };
+      return {
+        messages: current,
+        rounds,
+        sourceFiles: [...sourceFiles.values()],
+      };
     }
     sawToolCall = true;
 
     logger.info(
-      { rounds, owner: ctx.owner, name: ctx.name, toolCalls: response.toolCalls.length },
+      {
+        rounds,
+        owner: ctx.owner,
+        name: ctx.name,
+        toolCalls: response.toolCalls.length,
+      },
       "deep tool loop round",
     );
 
@@ -330,17 +394,23 @@ export async function runToolLoop(
         content: result.content,
         toolCallId: call.id,
       });
+      if (result.sourceFile)
+        sourceFiles.set(result.sourceFile.path, result.sourceFile);
     }
     current = [...current, assistantMsg, ...toolResults];
 
     if (rounds >= maxRounds) {
+      const noSource = forceToolUse && requireSourceRead && missingSource();
       const final = await invokeWithEmptyRetry({
         messages: [
           ...current,
           {
             role: "user",
             content:
-              "工具调用轮次已达上限。请停止继续调用工具，基于已获取的信息直接输出最终审查结果。",
+              "工具调用轮次已达上限。请停止继续调用工具，基于已获取的信息直接输出最终审查结果。" +
+              (noSource
+                ? "尚未取得非空源码，请如实说明，不要虚构文件路径或行号。"
+                : ""),
           },
         ],
         maxOutputTokens: 4_000,
@@ -348,6 +418,7 @@ export async function runToolLoop(
       return {
         messages: [...current, { role: "assistant", content: final.content }],
         rounds: rounds + 1,
+        sourceFiles: [...sourceFiles.values()],
       };
     }
   }
