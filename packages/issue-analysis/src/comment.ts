@@ -39,8 +39,16 @@ const evidenceKindLabels: Readonly<Record<string, string>> = {
   impact_scope: "影响范围",
 };
 
-export function buildPlaceholderComment(): string {
-  return "🤖 **AperturePrism** 正在分析该 Issue，完成后会原位更新此评论。";
+export function buildPlaceholderComment(attemptId?: string): string {
+  const body =
+    "🤖 **AperturePrism** 正在分析该 Issue，完成后会原位更新此评论。";
+  return attemptId
+    ? `${body}\n\n<!-- apertureprism:issue-analysis:${attemptId} -->`
+    : body;
+}
+
+export function buildCanceledIssueComment(): string {
+  return "## 🤖 AperturePrism 分析已取消\n\n该 Issue 的分析任务已取消，未生成新的分析结果。";
 }
 
 /** 失败原因到用户可读说明的映射；未知分类只说明结果，不编造原因。 */

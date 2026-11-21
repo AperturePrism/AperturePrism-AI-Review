@@ -54,9 +54,10 @@ describe("preloadTargetFiles", () => {
   it("reads an explicitly named TSX file rather than a truncated .ts path", async () => {
     const reader = repository({ [source]: code });
     await expect(
-      preloadTargetFiles(reader, context(`请改 ${source}`)),
+      preloadTargetFiles(reader, context(`请改 ${source}`), new AbortController().signal),
     ).resolves.toEqual([{ path: source, content: code }]);
-    expect(reader.getFileContents).toHaveBeenCalledExactlyOnceWith(
+    expect(reader.getFileContents).toHaveBeenCalledOnce();
+    expect(reader.getFileContents.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ path: source }),
     );
     expect(reader.listDirectory).not.toHaveBeenCalled();
@@ -70,6 +71,7 @@ describe("preloadTargetFiles", () => {
       preloadTargetFiles(
         reader,
         context("希望增加 toggle；参考旧版本 old.ts"),
+        new AbortController().signal,
         picker,
       ),
     ).resolves.toEqual([{ path: source, content: code }]);
@@ -79,7 +81,11 @@ describe("preloadTargetFiles", () => {
       "apps/web",
       "apps/web/src",
     ]);
-    expect(picker).toHaveBeenCalledExactlyOnceWith([source], expect.anything());
+    expect(picker).toHaveBeenCalledExactlyOnceWith(
+      [source],
+      expect.anything(),
+      expect.anything(),
+    );
     expect(
       reader.getFileContents.mock.calls.map(([args]) => args.path),
     ).toEqual(["old.ts", ranked, source]);
@@ -89,9 +95,18 @@ describe("preloadTargetFiles", () => {
     const reader = repository({ [source]: code });
     const picker = vi.fn(async () => []);
     await expect(
-      preloadTargetFiles(reader, context("希望支持切换外观"), picker),
+      preloadTargetFiles(
+        reader,
+        context("希望支持切换外观"),
+        new AbortController().signal,
+        picker,
+      ),
     ).resolves.toEqual([]);
-    expect(picker).toHaveBeenCalledExactlyOnceWith([source], expect.anything());
+    expect(picker).toHaveBeenCalledExactlyOnceWith(
+      [source],
+      expect.anything(),
+      expect.anything(),
+    );
     expect(reader.getFileContents).not.toHaveBeenCalled();
   });
 
@@ -110,7 +125,12 @@ describe("preloadTargetFiles", () => {
       }),
     };
     const picker = vi.fn(async () => []);
-    await preloadTargetFiles(reader, context("希望支持切换外观"), picker);
+    await preloadTargetFiles(
+      reader,
+      context("希望支持切换外观"),
+      new AbortController().signal,
+      picker,
+    );
     expect(reader.listDirectory).toHaveBeenCalledTimes(400);
     expect(picker.mock.calls[0]?.[0]).toHaveLength(200);
   });

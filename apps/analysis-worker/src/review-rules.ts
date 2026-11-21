@@ -9,6 +9,7 @@ type RepoRulesOptions,
 import type { IssueContext } from "../../../packages/issue-analysis/src/index.js";
 import type { createLogger } from "../../../packages/observability/src/index.js";
 import type { PrReviewContext } from "../../../packages/pr-review/src/index.js";
+import { withIssueReadBudget } from "./handler.js";
 
 export interface ReviewRulesServices {
   loadGlobalRules: () => Promise<string | undefined>;
@@ -16,6 +17,7 @@ export interface ReviewRulesServices {
   fetchExternalRules: (
     repositoryFullName: string,
     signal?: AbortSignal,
+    settingsReadTimeoutMs?: number,
   ) => Promise<string | undefined>;
   logger: Pick<ReturnType<typeof createLogger>, "warn">;
 }
@@ -28,11 +30,16 @@ export function createReviewRulesLoader(services: ReviewRulesServices) {
     repositoryFullName: string,
     repository: RepoRulesOptions,
     signal?: AbortSignal,
+    settingsReadTimeoutMs?: number,
   ): Promise<string | undefined> {
+    const readSetting = <T>(read: () => Promise<T>, fallback: T) =>
+      signal && settingsReadTimeoutMs !== undefined
+        ? withIssueReadBudget(signal, settingsReadTimeoutMs, read, fallback)
+        : read();
     let globalRules: string | undefined;
     try {
       // Bound legacy/manual DB writes too, not only validated settings API writes.
-      const raw = await services.loadGlobalRules();
+      const raw = await readSetting(services.loadGlobalRules, undefined);
       const bounded = raw?.slice(0, MAX_GLOBAL_REVIEW_RULES_CHARS);
       if (bounded?.trim()) globalRules = bounded;
     } catch (error) {
@@ -45,10 +52,11 @@ export function createReviewRulesLoader(services: ReviewRulesServices) {
     const sections: string[] = globalRules
       ? [`## 全局审核规则（适用于所有仓库，与仓库规则叠加）\n${globalRules}`]
       : [];
-    const enabled = await services
-      .repoRulesEnabled(repositoryFullName)
-      .catch(() => true);
-    if (!enabled)
+    const enabled = await readSetting(
+      () => services.repoRulesEnabled(repositoryFullName),
+      true,
+    ).catch(() => true);
+    if (!enabled || signal?.aborted)
       return sections.length > 0 ? sections.join("\n\n") : undefined;
 
     let localRules: string | undefined;
@@ -65,10 +73,11 @@ export function createReviewRulesLoader(services: ReviewRulesServices) {
     if (localRules?.trim()) sections.push(localRules);
 
     try {
-      const externalRules = await services.fetchExternalRules(
-        repositoryFullName,
-        signal,
-      );
+      const externalRules = signal?.aborted
+        ? undefined
+        : settingsReadTimeoutMs === undefined
+          ? await services.fetchExternalRules(repositoryFullName, signal)
+          : await services.fetchExternalRules(repositoryFullName, signal, settingsReadTimeoutMs);
       if (externalRules?.trim()) {
         sections.push(
           `## 外部链接审核规则（repo_rules_url 抓取，与目录规则同等效力）\n${externalRules}`,
@@ -81,7 +90,7 @@ export function createReviewRulesLoader(services: ReviewRulesServices) {
       );
     }
 
-    if (github && localRules === undefined) {
+    if (github && localRules === undefined && !signal?.aborted) {
       // Preserve first-analysis example seeding; failure never suppresses rules.
       try {
         if (await ensureRepoRulesDir(github, repository, signal)) {

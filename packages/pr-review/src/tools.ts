@@ -115,7 +115,9 @@ export async function executeToolCall(
   name: string,
   rawArgs: string,
   ctx: ToolExecutionContext,
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
+  signal?.throwIfAborted();
   let args: Record<string, unknown>;
   try {
     args = JSON.parse(rawArgs || "{}") as Record<string, unknown>;
@@ -141,7 +143,8 @@ export async function executeToolCall(
           name: ctx.name,
           path,
           ref: ctx.ref,
-        });
+        }, signal);
+        signal?.throwIfAborted();
         if (!file)
           return {
             ok: false,
@@ -178,9 +181,9 @@ export async function executeToolCall(
           name: ctx.name,
           path,
           ref: ctx.ref,
-        });
-        if (entries.length === 0)
-          return { ok: true, content: "(空目录或路径不存在)" };
+        }, signal);
+        signal?.throwIfAborted();
+        if (entries.length === 0) return { ok: true, content: "(空目录或路径不存在)" };
         return {
           ok: true,
           content: entries
@@ -199,6 +202,7 @@ export async function executeToolCall(
         return { ok: false, content: `未知工具: ${name}` };
     }
   } catch (error) {
+    signal?.throwIfAborted();
     return {
       ok: false,
       content: `工具执行失败：${error instanceof Error ? error.message : String(error)}`,
@@ -207,6 +211,8 @@ export async function executeToolCall(
 }
 
 export type ToolLoopOptions = {
+  /** Cancels repository I/O and prevents subsequent tool/model rounds. */
+  signal?: AbortSignal;
   /** 暴露给模型的工具（默认内置工具）。 */
   tools?: readonly ModelToolSpec[];
   /** 最大工具调用轮数（超出后强制模型收尾）。 */
@@ -265,9 +271,13 @@ export async function runToolLoop(
   // 轮即可，若直接上抛会让整个 deep 分析无谓地致命失败。
   const invokeWithEmptyRetry: typeof invoke = async (request) => {
     for (let attempt = 0; ; attempt += 1) {
+      options.signal?.throwIfAborted();
       try {
-        return await invoke(request);
+        const response = await invoke(request);
+        options.signal?.throwIfAborted();
+        return response;
       } catch (error) {
+        options.signal?.throwIfAborted();
         const emptyResponse =
           error instanceof Error &&
           /did not contain message content/.test(error.message);
@@ -365,7 +375,7 @@ export async function runToolLoop(
     const toolResults: ModelMessage[] = [];
     for (const call of response.toolCalls) {
       const started = Date.now();
-      const result = await executeToolCall(call.name, call.arguments, ctx);
+      const result = await executeToolCall(call.name, call.arguments, ctx, options.signal);
       const fields = {
         owner: ctx.owner,
         name: ctx.name,

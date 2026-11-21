@@ -331,9 +331,7 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     );
     const probe = form.getByRole("button", { name: "获取模型列表" });
     expect(probe).toBeDisabled();
-    expect(
-      form.getByText(/Base URL 已修改.*先.*保存/),
-    ).toBeTruthy();
+    expect(form.getByText(/Base URL 已修改.*先.*保存/)).toBeTruthy();
     await user.click(probe);
     expect(fetchModels).not.toHaveBeenCalled();
     expect(form.getByLabelText("API Key（已保存）")).toHaveValue(
@@ -408,6 +406,56 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
     );
   });
 
+  it.each(["手动填写", "获取列表"])(
+    "模型为空时定位字段，再通过%s完成保存（#165）",
+    async (mode) => {
+      renderPage();
+      await user.click(screen.getByRole("button", { name: "添加模型" }));
+      const form = within(screen.getByRole("region", { name: "添加模型" }));
+      await user.type(form.getByPlaceholderText(/Provider 标识/), "new");
+      await user.type(
+        form.getByPlaceholderText(/Base URL/),
+        "https://gateway.example.test/v1",
+      );
+      await user.type(form.getByLabelText("API Key"), "synthetic-key");
+      const modelField = form.getByRole("textbox", { name: "模型名（必填）" });
+      await user.type(modelField, "   ");
+      const save = form.getByRole("button", { name: "保存并接入" });
+      await user.click(save);
+
+      expect(modelField).toHaveFocus();
+      expect(modelField).toHaveAttribute("aria-invalid", "true");
+      expect(modelField).toHaveAccessibleDescription(
+        /请填写模型名.*获取模型列表/,
+      );
+      expect(saveProvider).not.toHaveBeenCalled();
+      expect(fetchModels).not.toHaveBeenCalled();
+
+      const probe = form.getByRole("button", { name: "获取模型列表" });
+      if (mode === "获取列表") {
+        fetchModels.mockResolvedValueOnce(["ready-model"]);
+        await user.click(probe);
+        expect(
+          form.getByRole("combobox", { name: "模型名（必填）" }),
+        ).toHaveValue("ready-model");
+      } else {
+        fetchModels.mockRejectedValueOnce(new Error("No model listing"));
+        await user.click(probe);
+        expect(modelField).toHaveAttribute("aria-invalid", "true");
+        await user.type(modelField, "ready-model");
+        expect(modelField).toHaveAttribute("aria-invalid", "false");
+      }
+      await user.click(save);
+      expect(saveProvider).toHaveBeenCalledTimes(1);
+      expect(saveProvider).toHaveBeenCalledWith({
+        provider: "new",
+        baseUrl: "https://gateway.example.test/v1",
+        apiKey: "synthetic-key",
+        model: "ready-model",
+      });
+    },
+  );
+
   it("回填账户当前模型，只改 Base URL 也能直接保存", async () => {
     fetchProviders.mockResolvedValue({
       policies: [
@@ -421,7 +469,11 @@ describe("编辑模型的已保存密钥（issue #114）", () => {
         },
       ],
       accounts: [
-        { provider: "p", name: "p-main", baseUrl: "https://api.example.com/v1" },
+        {
+          provider: "p",
+          name: "p-main",
+          baseUrl: "https://api.example.com/v1",
+        },
       ],
     });
     const form = await openEditor();

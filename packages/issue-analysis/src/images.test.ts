@@ -88,6 +88,22 @@ describe("collectIssueImages", () => {
 });
 
 describe("image response body deadline", () => {
+  it("cancels active downloads and does not retry after caller abort", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async (_url: string, init?: { signal?: AbortSignal }) => {
+      expect(init?.signal?.aborted).toBe(false);
+      controller.abort();
+      expect(init?.signal?.aborted).toBe(true);
+      throw init?.signal?.reason;
+    });
+
+    await expect(collectIssueImages(ctx("![a](https://x.com/a.png) ![b](https://x.com/b.png)"), {
+      signal: controller.signal,
+      fetchImpl,
+    })).rejects.toBe(controller.signal.reason);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the timeout active until the response body is consumed", async () => {
     vi.useFakeTimers();
     try {

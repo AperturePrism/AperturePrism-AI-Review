@@ -478,6 +478,12 @@ export async function analyzeIssue(
     options.tools || sourceFiles.size > 0 ? "enabled" : "disabled";
   let mainContent: string;
   if (options.tools) {
+    // Model routing bounds each invocation; the same analysis budget must also
+    // stop repository reads between model rounds.
+    const toolDeadline = AbortSignal.timeout(Math.ceil(remainingMsFrom()));
+    const toolSignal = options.signal
+      ? AbortSignal.any([options.signal, toolDeadline])
+      : toolDeadline;
     const loop = await runToolLoop(
       (request) =>
         invokeOnceWithEmptyRetry(request).then((result) => result.response),
@@ -496,6 +502,7 @@ export async function analyzeIssue(
         ),
       },
       {
+        signal: toolSignal,
         tools: builtinTools(),
         requireSourceRead: true,
         hasPreloadedSource: sourceFiles.size > 0,

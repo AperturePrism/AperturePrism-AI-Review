@@ -18,7 +18,7 @@ type FileReader = {
     name: string;
     path: string;
     ref: string;
-  }): Promise<{ content?: string } | null | undefined>;
+  }, signal: AbortSignal): Promise<{ content?: string } | null | undefined>;
   /** 列目录条目（contents API），供兜底命中按关键词扫仓用。 */
   listDirectory(args: {
     installationId: string;
@@ -26,7 +26,7 @@ type FileReader = {
     name: string;
     path: string;
     ref: string;
-  }): Promise<{ name: string; path: string; type: string }[]>;
+  }, signal: AbortSignal): Promise<{ name: string; path: string; type: string }[]>;
 };
 
 /** 审查/缺陷请求里用户点名的文件路径（如 main.py、backend/app.ts）。最多取 2 个。 */
@@ -93,20 +93,28 @@ function extractIssueKeywords(context: IssueContext): Set<string> {
 async function listRepoSourcePaths(
   reader: FileReader,
   context: IssueContext,
+  signal: AbortSignal,
 ): Promise<string[]> {
   const files = new Set<string>();
   const queue = [{ path: "", depth: 1 }];
   const discovered = new Set([""]);
   for (const directory of queue) {
+    signal.throwIfAborted();
     const entries = await reader
-      .listDirectory({
-        installationId: context.installationId,
-        owner: context.repository.owner,
-        name: context.repository.name,
-        path: directory.path,
-        ref: "HEAD",
-      })
-      .catch(() => []);
+      .listDirectory(
+        {
+          installationId: context.installationId,
+          owner: context.repository.owner,
+          name: context.repository.name,
+          path: directory.path,
+          ref: "HEAD",
+        },
+        signal,
+      )
+      .catch(() => {
+        signal.throwIfAborted();
+        return [];
+      });
     for (const entry of entries) {
       if (entry.type === "file") {
         if (
@@ -158,9 +166,11 @@ async function readPreloadFiles(
   reader: FileReader,
   context: IssueContext,
   paths: string[],
+  signal: AbortSignal,
 ): Promise<{ path: string; content: string }[]> {
   const out: { path: string; content: string }[] = [];
   for (const path of paths) {
+    signal.throwIfAborted();
     try {
       const file = await reader.getFileContents({
         installationId: context.installationId,
@@ -168,10 +178,12 @@ async function readPreloadFiles(
         name: context.repository.name,
         path,
         ref: "HEAD",
-      });
+      }, signal);
+      signal.throwIfAborted();
       const content = file?.content?.slice(0, PRELOAD_MAX_CHARS);
       if (content?.trim()) out.push({ path, content });
     } catch {
+      signal.throwIfAborted();
       // 文件不存在或读取失败 → 忽略，保留其它可读文件。
     }
   }
@@ -251,18 +263,21 @@ export function parseFilePicks(text: string, candidates: string[]): string[] {
 export async function preloadTargetFiles(
   reader: FileReader,
   context: IssueContext,
+  signal: AbortSignal,
   pickWithModel?: (
     candidatePaths: string[],
     ctx: IssueContext,
+    signal: AbortSignal,
   ) => Promise<string[]>,
 ): Promise<{ path: string; content: string }[]> {
+  signal.throwIfAborted();
   const tried = new Set<string>();
   const read = (paths: readonly string[]) => {
     const candidates = [...new Set(paths)]
       .filter((path) => !tried.has(path))
       .slice(0, 2);
     for (const path of candidates) tried.add(path);
-    return readPreloadFiles(reader, context, candidates);
+    return readPreloadFiles(reader, context, candidates, signal);
   };
 
   const explicit = await read(extractTargetFiles(context));
@@ -270,7 +285,8 @@ export async function preloadTargetFiles(
 
   const terms = extractIssueKeywords(context);
   if (terms.size === 0 && !pickWithModel) return [];
-  const paths = await listRepoSourcePaths(reader, context);
+  const paths = await listRepoSourcePaths(reader, context, signal);
+  signal.throwIfAborted();
   const ranked = await read(
     findRelevantFiles(
       paths.filter((path) => !tried.has(path)),
@@ -282,7 +298,7 @@ export async function preloadTargetFiles(
   const candidates = paths.filter((path) => !tried.has(path));
   if (candidates.length === 0) return [];
   const allowed = new Set(candidates);
-  const picks = await pickWithModel(candidates, context).catch(() => []);
+  const picks = await pickWithModel(candidates, context, signal).catch(() => []);
   return read(picks.filter((path) => allowed.has(path)));
 }
 
@@ -300,9 +316,11 @@ export async function verifyProposedChangePaths(input: {
   owner: string;
   name: string;
   changes: readonly ProposedChange[];
+  signal: AbortSignal;
 }): Promise<ProposedChange[]> {
   const kept: ProposedChange[] = [];
   for (const change of input.changes) {
+    input.signal.throwIfAborted();
     if (!change.path || change.path === CODE_ACCESS_UNKNOWN_PATH) {
       kept.push(change);
       continue;
@@ -314,7 +332,8 @@ export async function verifyProposedChangePaths(input: {
         name: input.name,
         path: change.path,
         ref: "HEAD",
-      });
+      }, input.signal);
+      input.signal.throwIfAborted();
       // getFileContents 对目录/非文件/404 返回 null → 视为不存在，移除。
       if (file) {
         kept.push(change);
@@ -325,6 +344,7 @@ export async function verifyProposedChangePaths(input: {
         );
       }
     } catch {
+      input.signal.throwIfAborted();
       // 校验失败（网络/限流等）不误删，保留原建议。
       kept.push(change);
     }

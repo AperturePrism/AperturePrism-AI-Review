@@ -679,6 +679,42 @@ describe("enhancement source grounding", () => {
 });
 
 describe("deep issue analysis accounting", () => {
+  it("cancels an in-flight repository tool without running more tools or model rounds", async () => {
+    const controller = new AbortController();
+    const invoke = vi.fn(async () => ({
+      content: "",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      toolCalls: [
+        { id: "read-1", name: "read_file", arguments: '{"path":"src/main.ts"}' },
+        { id: "list-1", name: "list_directory", arguments: "{}" },
+      ],
+    }));
+    const getFileContents = vi.fn(async (_input: unknown, signal?: AbortSignal) => {
+      expect(signal?.aborted).toBe(false);
+      controller.abort();
+      expect(signal?.aborted).toBe(true);
+      throw new Error("transport canceled");
+    });
+    const listDirectory = vi.fn();
+
+    await expect(analyzeIssue({
+      ...options([{ provider: candidate.provider, invoke }], [candidate]),
+      signal: controller.signal,
+      tools: {
+        context: {
+          client: { getFileContents, listDirectory },
+          installationId: "42",
+          owner: "o",
+          name: "r",
+          ref: "HEAD",
+        },
+      },
+    }, context)).rejects.toMatchObject({ name: "AbortError" });
+    expect(getFileContents).toHaveBeenCalledTimes(1);
+    expect(listDirectory).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it("starts with the tool request and counts every exploration invocation", async () => {
     let calls = 0;
     const adapter: ModelProviderAdapter = {

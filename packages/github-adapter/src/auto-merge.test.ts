@@ -264,7 +264,8 @@ describe("GitHub automatic merge transport", () => {
   });
 
   it("sends a version-bound PUT with the requested merge method and abort signal", async () => {
-    const signal = new AbortController().signal;
+    const controller = new AbortController();
+    const { signal } = controller;
     const { client, calls } = setup(() =>
       json({
         merged: true,
@@ -288,7 +289,8 @@ describe("GitHub automatic merge transport", () => {
       sha: head,
       merge_method: "squash",
     });
-    expect(calls.every((call) => call.init.signal === signal)).toBe(true);
+    controller.abort();
+    expect(calls.every((call) => call.init.signal?.aborted)).toBe(true);
   });
 
   it("preserves a head mismatch response as an error and never retries the merge write", async () => {
