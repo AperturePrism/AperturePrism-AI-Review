@@ -8,7 +8,7 @@ import {
 import type { GitHubClient } from "../../../packages/github-adapter/src/index.js";
 import { parsePrReviewTaskPayload } from "../../../packages/pr-review/src/payload.js";
 import { prReviewContractSchema } from "../../../packages/pr-review/src/types.js";
-import { reviewAllowsAutoMerge } from "../../../packages/pr-review/src/auto-merge.js";
+import { hasCompleteCleanAssessment } from "../../../packages/pr-review/src/auto-merge.js";
 
 type TerminalStatus = "completed" | "failed" | "canceled";
 type CheckRunClient = Pick<GitHubClient, "getCheckRun" | "updateCheckRun">;
@@ -57,8 +57,9 @@ export function terminalCheckRunOutput(
   const findings = review.findings.length;
   if (
     findings === 0 &&
-    assessment !== undefined &&
-    !reviewAllowsAutoMerge(result)
+    (review.overallTone === "changes_requested" ||
+      (assessment !== undefined &&
+        !hasCompleteCleanAssessment(review, assessment)))
   ) {
     const gate =
       typeof assessment === "object" &&
@@ -71,11 +72,25 @@ export function terminalCheckRunOutput(
       gate !== null &&
       "status" in gate &&
       gate.status === "failed";
+    if (failed) {
+      return {
+        conclusion: "failure",
+        title: "AI 审查门禁未通过",
+        summary: "审查未通过质量门禁。请在 WebUI 查看门禁详情。",
+      };
+    }
+    if (review.overallTone === "changes_requested") {
+      return {
+        conclusion: "neutral",
+        title: "AI 审查要求修改",
+        summary: "审查要求修改，不能将检查标记为成功。",
+      };
+    }
     return {
-      conclusion: failed ? "failure" : "neutral",
-      title: failed ? "AI 审查门禁未通过" : "AI 审查尚不完整",
+      conclusion: "neutral",
+      title: "AI 审查尚不完整",
       summary:
-        "审查未明确批准、门禁未通过、覆盖不足或存在被过滤/抑制的发现；不能将其标记为成功。",
+        "审查评估无效、门禁未通过、覆盖不足或存在被过滤/抑制的发现；不能将检查标记为成功。",
     };
   }
   return {
