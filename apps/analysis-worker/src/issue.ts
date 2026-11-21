@@ -3,6 +3,7 @@
  * 调用示例：createIssueWorkflow({ github, adapters, issueCandidates, issueVisionCandidates, spamCandidates })(task, signal)。
  * 仅拆分内部实现；任务与数据契约保持兼容，依赖在下方显式列出。
  */
+import { sql } from "drizzle-orm";
 import {
   BOOLEAN_DEFAULTS,
   parseBool,
@@ -32,6 +33,29 @@ import { issueMinChangeRatio, resolveIssueSettings } from "./preferences.js";
 import { database, logger } from "./runtime.js";
 import { issueIdentity } from "./task.js";
 
+const OPTIONAL_DB_READ_MS = 5_000;
+const OPTIONAL_GITHUB_STAGE_MS = 15_000;
+// Preserve the existing 30s model picker cap, with room for repository I/O.
+const SOURCE_PRELOAD_TIMEOUT_MS = 45_000;
+
+function optionalGitHubStageSignal(parent: AbortSignal) {
+  return AbortSignal.any([parent, AbortSignal.timeout(OPTIONAL_GITHUB_STAGE_MS)]);
+}
+
+/** Bound best-effort DB writes server-side; never race an in-flight write. */
+async function writeOptionalIssueMetadata(
+  signal: AbortSignal,
+  write: (tx: Parameters<typeof writeRepoMemory>[0]) => Promise<void>,
+) {
+  signal.throwIfAborted();
+  await database.db.transaction(async (tx) => {
+    signal.throwIfAborted();
+    await tx.execute(sql`set local statement_timeout = '5s'`);
+    signal.throwIfAborted();
+    await write(tx);
+  });
+}
+
 /** Applies configured label rules to an analyzed issue (idempotent). */
 export async function applyConfiguredLabels(input: {
   github: ReturnType<typeof createGitHubClient>;
@@ -40,8 +64,9 @@ export async function applyConfiguredLabels(input: {
   name: string;
   issueNumber: number;
   analysis: IssueAnalysisResult;
+  signal: AbortSignal;
 }): Promise<void> {
-  const rules = await listLabelRules(database.db);
+  const rules = await withIssueReadBudget(input.signal, OPTIONAL_DB_READ_MS, () => listLabelRules(database.db), []);
   // 标签来源 = 规则引擎匹配（category/severity/priority/quality）∪ 模型建议。
   // 此前模型在评论里输出的「建议标签」从不落到 GitHub（issue #23 用户误解的根源）：
   // 评论说了建议标签、Issue 上却没有。合并后言行一致；GitHub 会对不存在的
@@ -74,16 +99,17 @@ export async function applyConfiguredLabels(input: {
     },
     "applying configured labels",
   );
+  input.signal.throwIfAborted();
   await input.github.addIssueLabels({
     installationId: input.installationId,
     owner: input.owner,
     name: input.name,
     number: input.issueNumber,
     labels: capped,
-  });
+  }, input.signal);
   // issue #31：把实际打上的标签同步进本地标签配置，WebUI「标签配置」页可见。
   // best-effort：失败只告警，不影响打标与分析任务。
-  await syncAppliedLabels(database.db, capped).catch((error: unknown) =>
+  await writeOptionalIssueMetadata(input.signal, (tx) => syncAppliedLabels(tx, capped)).catch((error: unknown) =>
     logger.warn({ err: error }, "applied label sync failed"),
   );
 }
@@ -161,15 +187,18 @@ export function isFeatureRequest(context: IssueContext): boolean {
 export async function shouldReanalyzeIssue(
   task: { payload: unknown },
   context: IssueContext,
+  signal: AbortSignal,
 ): Promise<boolean> {
   if (!isIssueEditEvent(task.payload)) return true;
   try {
     const { payload } = issueIdentity(task);
     const repositoryId = await resolveRepositoryId(payload.repositoryFullName);
+    signal.throwIfAborted();
     const snapshot = await getIndexedIssueText(
       database.sql as unknown as SqlTag,
       { repositoryId, issueNumber: payload.subjectNumber },
     );
+    signal.throwIfAborted();
     const revisionAt = new Date(payload.subjectRevision);
     const decision = decideReanalysis({
       gated: true,
@@ -251,6 +280,7 @@ async function resolveIssueAssignees(input: {
   name: string;
   configured: string;
   author: string | null;
+  signal: AbortSignal;
 }): Promise<string[]> {
   if (input.configured) {
     return input.configured === input.author ? [] : [input.configured];
@@ -262,8 +292,9 @@ async function resolveIssueAssignees(input: {
       installationId: input.installationId,
       owner: input.owner,
       name: input.name,
-    });
+    }, input.signal);
   } catch (error) {
+    input.signal.throwIfAborted();
     logger.warn(
       { err: error, repo: `${input.owner}/${input.name}` },
       "collaborator lookup failed; assigning the owner only",
@@ -296,8 +327,14 @@ export async function applyIssueEnhancements(input: {
     IssueAnalysisResult,
     "severity" | "priority" | "suggestedLabels" | "suggestedTitle"
   >;
+  signal: AbortSignal;
 }): Promise<string[]> {
-  const cfg = await issueEnhancementConfig(`${input.owner}/${input.name}`);
+  const cfg = await withIssueReadBudget(
+    input.signal,
+    OPTIONAL_DB_READ_MS,
+    () => issueEnhancementConfig(`${input.owner}/${input.name}`),
+    { autoAssign: false, assignee: "", rewriteTitle: false },
+  );
   // 标题按 [标签][重要度]标题 格式拼装（issue #5），前缀由服务端生成。
   const suggested = formatSuggestedTitle(input.analysis) ?? "";
   if (!cfg.autoAssign && !(cfg.rewriteTitle && suggested)) return [];
@@ -308,7 +345,7 @@ export async function applyIssueEnhancements(input: {
     owner: input.owner,
     name: input.name,
     number: input.issueNumber,
-  });
+  }, input.signal);
 
   const patches: { title?: string; assignees?: string[] } = {};
   if (cfg.autoAssign) {
@@ -319,6 +356,7 @@ export async function applyIssueEnhancements(input: {
       name: input.name,
       configured: cfg.assignee,
       author: issue.author,
+      signal: input.signal,
     });
     if (assignees.length > 0) patches.assignees = assignees;
   }
@@ -327,13 +365,14 @@ export async function applyIssueEnhancements(input: {
   }
   if (Object.keys(patches).length === 0) return [];
 
+  input.signal.throwIfAborted();
   await input.github.updateIssue({
     installationId: input.installationId,
     owner: input.owner,
     name: input.name,
     number: input.issueNumber,
     ...patches,
-  });
+  }, input.signal);
   logger.info(
     {
       repo: `${input.owner}/${input.name}`,
@@ -366,14 +405,10 @@ import {
 } from "../../../packages/github-adapter/src/index.js";
 import {
   analyzeIssue,
-  buildFailureComment,
   buildIssueAnalysisComment,
   buildIssueContext,
-  buildPlaceholderComment,
   collectIssueImages,
   detectSpamIssue,
-  issueCommentIdempotencyKey,
-  publishIssueComment,
 } from "../../../packages/issue-analysis/src/index.js";
 import { routeModelInvocation } from "../../../packages/model-router/src/index.js";
 import { recordAttemptUsage } from "../../../packages/task-engine/src/index.js";
@@ -384,7 +419,7 @@ import {
   verifyProposedChangePaths,
 } from "./files.js";
 import { assertGithub } from "./github.js";
-import { createIssueAnalysisHandler } from "./handler.js";
+import { createIssueAnalysisHandler, withIssueReadBudget } from "./handler.js";
 import { type TaskHandler } from "./loop.js";
 import { repoMemoryText } from "./memory.js";
 import {
@@ -395,12 +430,14 @@ import {
   resolveIssuePromptVersion,
   resolveIssueSections,
 } from "./preferences.js";
-import { persistSubjectResult, publicationStore } from "./publication.js";
+import { publishTrackedIssueComment } from "./issue-comment.js";
+import { persistSubjectResult } from "./publication.js";
 import { withIssueReviewRules } from "./review-rules.js";
 import { loadRepoRules } from "./rules.js";
 import {
   analysisDeadlineMs,
   analysisRetryPolicy,
+  deepAnalysisDeadlineMs,
   workerId,
 } from "./runtime.js";
 import { closeSpamIssue, spamHandlingMode } from "./spam.js";
@@ -438,7 +475,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
           undefined,
           signal,
         ),
-        repoMemoryText(payload.repositoryFullName),
+        withIssueReadBudget(signal, OPTIONAL_DB_READ_MS, () => repoMemoryText(payload.repositoryFullName), undefined),
         loadRepoRules(
           github,
           payload.repositoryFullName,
@@ -447,7 +484,8 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
             owner: identity.owner,
             name: identity.name,
           },
-          signal,
+          optionalGitHubStageSignal(signal),
+          OPTIONAL_DB_READ_MS,
         ),
       ]);
       return withIssueReviewRules(
@@ -456,55 +494,41 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
       );
     },
 
-    shouldReanalyze: (task, context) => shouldReanalyzeIssue(task, context),
+    shouldReanalyze: shouldReanalyzeIssue,
 
     publishPlaceholder: async (task, signal) => {
-      signal.throwIfAborted();
       const { payload, identity } = issueIdentity(task);
-      await publishIssueComment({
-        signal,
-        store: publicationStore,
+      return publishTrackedIssueComment({
+        db: database.db,
         github: assertGithub(github),
-        taskId: task.id,
-        installationId: payload.installationId,
-        owner: identity.owner,
-        name: identity.name,
-        issueNumber: payload.subjectNumber,
-        idempotencyKey: issueCommentIdempotencyKey(
-          payload.repositoryFullName,
-          payload.subjectNumber,
-        ),
-        body: buildPlaceholderComment(),
-      });
-    },
-
-    // 用同一幂等键原位改写占位评论，不新增评论。
-    publishFailure: async (task, errorCategory, signal) => {
-      signal.throwIfAborted();
-      const { payload, identity } = issueIdentity(task);
-      await publishIssueComment({
+        task,
+        payload,
+        identity,
         signal,
-        store: publicationStore,
-        github: assertGithub(github),
-        taskId: task.id,
-        installationId: payload.installationId,
-        owner: identity.owner,
-        name: identity.name,
-        issueNumber: payload.subjectNumber,
-        idempotencyKey: issueCommentIdempotencyKey(
-          payload.repositoryFullName,
-          payload.subjectNumber,
-        ),
-        body: buildFailureComment(errorCategory),
+        kind: "placeholder",
       });
     },
 
     analyze: async (context: IssueContext, signal) => {
       const repositoryFullName = `${context.repository.owner}/${context.repository.name}`;
       // issue #102：时间预算与重试次数按设置解析（WebUI 可在线调整）。
-      const budgets = await resolveAnalysisBudgets(repositoryFullName);
+      const [budgets, deep, promptVersion, promptMode, issueSections, vision] = await Promise.all([
+        withIssueReadBudget(signal, OPTIONAL_DB_READ_MS, () => resolveAnalysisBudgets(repositoryFullName), { analysisDeadlineMs, deepAnalysisDeadlineMs, retryPolicy: analysisRetryPolicy }),
+        withIssueReadBudget(signal, OPTIONAL_DB_READ_MS, () => issueDeepAnalysisEnabled(repositoryFullName), false),
+        withIssueReadBudget(signal, OPTIONAL_DB_READ_MS, resolveIssuePromptVersion, undefined),
+        withIssueReadBudget(signal, OPTIONAL_DB_READ_MS, resolveIssuePromptMode, undefined),
+        withIssueReadBudget(
+          signal,
+          OPTIONAL_DB_READ_MS,
+          () => resolveIssueSections(repositoryFullName),
+          {
+            sections: undefined,
+            sectionsByCategory: { bug: undefined, feature: undefined },
+          },
+        ),
+        withIssueReadBudget(signal, OPTIONAL_DB_READ_MS, () => issueVisionEnabled(repositoryFullName), false),
+      ]);
       // 深度分析（读取仓库源码）默认关闭：会显著增加 token 消耗与耗时。
-      const deep = await issueDeepAnalysisEnabled(repositoryFullName);
       // 决策留痕：tools 是否注入取决于 deep && (defect|feature|codeRef)，任一不成立
       // 都会导致模型读不到仓库（无 read_file/list_directory），深读挑错静默失效。
       // codeRef：deep 已开启且内容引用具体源码文件/扩展名时兜底读仓（#70），
@@ -531,12 +555,13 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
       // 调用工具都能看到源码（deepseek 的 function-calling 不稳定）。tools 仍保留。
       if (deep && shouldReadRepo) {
         try {
-          const preload = await preloadTargetFiles(
+          const preload = await withIssueReadBudget(signal, SOURCE_PRELOAD_TIMEOUT_MS, (preloadSignal) => preloadTargetFiles(
             assertGithub(github),
             context,
+            preloadSignal,
             // 内容级检索：#62 方案2。仅当路径打分未命中（中文语义）时，由模型从
             // 仓库候选清单挑最相关源码，覆盖纯中文 enhancement 场景。
-            async (candidatePaths, ctx) => {
+            async (candidatePaths, ctx, signal) => {
               logger.info(
                 {
                   repo: repositoryFullName,
@@ -550,7 +575,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
                 request: buildFilePickRequest(ctx, candidatePaths),
                 deadlineMs: Math.min(budgets.analysisDeadlineMs, 30_000),
                 retryPolicy: budgets.retryPolicy,
-                ...(signal === undefined ? {} : { signal }),
+                signal,
               });
               const picked = parseFilePicks(
                 res.response.content,
@@ -567,7 +592,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
               );
               return picked;
             },
-          );
+          ), []);
           if (preload.length > 0) {
             context = { ...context, preloadedFiles: preload };
             logger.info(
@@ -580,20 +605,18 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
             );
           }
         } catch (error) {
+          signal.throwIfAborted();
           logger.warn(
             { err: error, repo: repositoryFullName },
             "issue target file preload failed",
           );
         }
       }
-      const promptVersion = await resolveIssuePromptVersion();
-      const promptMode = await resolveIssuePromptMode();
-      const issueSections = await resolveIssueSections(repositoryFullName);
       // 图片多模态：开启时下载 Issue 正文/评论里的图片并入上下文；任何图片失败
       // 都降级（记入 degraded）而非失败，文本分析总能继续（#545 Phase 1）。
       let ctx = context;
-      if (await issueVisionEnabled(repositoryFullName)) {
-        const collected = await collectIssueImages(context);
+      if (vision) {
+        const collected = await withIssueReadBudget(signal, OPTIONAL_GITHUB_STAGE_MS, (imageSignal) => collectIssueImages(context, { signal: imageSignal }), { images: [], degraded: ["image_collection_timeout"] });
         logger.info(
           {
             repo: repositoryFullName,
@@ -681,6 +704,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
             ctx,
           );
         } catch (error) {
+          signal.throwIfAborted();
           logger.warn(
             {
               err: error,
@@ -715,7 +739,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
       );
     },
 
-    recallRelated: async (context) => {
+    recallRelated: async (context, signal) => {
       let recalled: RelatedIssueRow[] = [];
       try {
         recalled = await recallCandidatesWithRepos(
@@ -739,6 +763,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
         logger.warn({ err: error }, "related-issue recall skipped");
         return [];
       }
+      signal.throwIfAborted();
       if (recalled.length === 0) return [];
 
       // 让模型裁决召回候选，只保留确认相关/重复的，避免「文本相似但实际无关」
@@ -751,6 +776,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
             candidates: issueCandidates,
             deadlineMs: analysisDeadlineMs,
             retryPolicy: analysisRetryPolicy,
+            signal,
           },
           {
             lead: {
@@ -796,8 +822,10 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
           name: identity.name,
           issueNumber: payload.subjectNumber,
           analysis: analysis.result,
+          signal: optionalGitHubStageSignal(signal),
         });
       } catch (error) {
+        signal.throwIfAborted();
         logger.warn(
           { err: error, taskId: task.id },
           "issue enhancement skipped",
@@ -811,13 +839,14 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
       // #57：发布前校验 proposedChanges.path 真实存在，移除编造的文件/文件夹路径。
       if ((analysis.result.proposedChanges ?? []).length > 0) {
         try {
-          const verified = await verifyProposedChangePaths({
+          const verified = await withIssueReadBudget(signal, OPTIONAL_GITHUB_STAGE_MS, (stageSignal) => verifyProposedChangePaths({
             reader: assertGithub(github),
             installationId: payload.installationId,
             owner: identity.owner,
             name: identity.name,
             changes: analysis.result.proposedChanges,
-          });
+            signal: stageSignal,
+          }), analysis.result.proposedChanges);
           if (verified.length !== analysis.result.proposedChanges.length) {
             logger.warn(
               {
@@ -831,6 +860,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
           }
           analysis.result.proposedChanges = verified;
         } catch (error) {
+          signal.throwIfAborted();
           // 校验整体失败（罕见）不阻断发布，保留原建议。
           logger.warn(
             { err: error, taskId: task.id },
@@ -838,22 +868,19 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
           );
         }
       }
-      await publishIssueComment({
-        signal,
-        store: publicationStore,
+      if (!(await publishTrackedIssueComment({
+        db: database.db,
         github: assertGithub(github),
-        taskId: task.id,
-        installationId: payload.installationId,
-        owner: identity.owner,
-        name: identity.name,
-        issueNumber: payload.subjectNumber,
-        idempotencyKey: issueCommentIdempotencyKey(
-          payload.repositoryFullName,
-          payload.subjectNumber,
-        ),
+        task,
+        payload,
+        identity,
+        signal,
+        kind: "final",
         body: buildIssueAnalysisComment(analysis, related),
-      });
+      }))) return;
+      signal.throwIfAborted();
       await persistSubjectResult({
+        execution: task,
         taskId: task.id,
         subjectType: "issue",
         subjectNumber: payload.subjectNumber,
@@ -861,6 +888,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
         revision: payload.subjectRevision,
         result: related.length > 0 ? { ...analysis, related } : analysis,
       });
+      signal.throwIfAborted();
       // Apply configured label rules to the issue (best-effort, idempotent).
       await applyConfiguredLabels({
         github: assertGithub(github),
@@ -869,6 +897,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
         name: identity.name,
         issueNumber: payload.subjectNumber,
         analysis: analysis.result,
+        signal: optionalGitHubStageSignal(signal),
       }).catch((error: unknown) =>
         logger.warn(
           { err: error, taskId: task.id },
@@ -896,12 +925,11 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
         );
     },
 
-    recordMemory: async (task, analysis) => {
+    recordMemory: async (task, analysis, signal) => {
       try {
         const { payload } = issueIdentity(task);
-        const repositoryId = await resolveRepositoryId(
-          payload.repositoryFullName,
-        );
+        const repository = await withIssueReadBudget(signal, OPTIONAL_DB_READ_MS, async () => ({ id: await resolveRepositoryId(payload.repositoryFullName) }), undefined);
+        if (!repository) return;
         const result = analysis.result;
         const evidence = result.evidence
           .map((entry) => `[${entry.kind}] ${entry.excerpt}`)
@@ -914,14 +942,14 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
             ? [`建议动作：${result.suggestedActions.join("、")}`]
             : []),
         ].join("\n");
-        await writeRepoMemory(database.db, {
-          repositoryId: repositoryId ?? undefined,
+        await writeOptionalIssueMetadata(signal, (tx) => writeRepoMemory(tx, {
+          repositoryId: repository.id ?? undefined,
           kind: "reflection",
           title: `Issue #${payload.subjectNumber} · ${result.category}/${result.severity} ${result.summary.slice(0, 50)}`,
           content,
           sourceType: "issue_analysis",
           sourceRef: `#${payload.subjectNumber}`,
-        });
+        }));
       } catch (error) {
         logger.warn(
           { err: error, taskId: task.id },
@@ -938,7 +966,9 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
         if (candidates.length === 0) return null;
         const { payload, identity } = issueIdentity(task);
         // issue #102：spam 检测同样用可配置预算（全局值，不按仓库覆盖）。
-        const budgets = await resolveAnalysisBudgets(null);
+        const budgets = await withIssueReadBudget(signal, OPTIONAL_DB_READ_MS, () => resolveAnalysisBudgets(null), {
+          analysisDeadlineMs, deepAnalysisDeadlineMs, retryPolicy: analysisRetryPolicy,
+        });
         const context = await buildIssueContext(
           github,
           {
@@ -967,15 +997,17 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
       }
     },
 
-    handleSpam: async (task, verdict) => {
+    handleSpam: async (task, verdict, signal) => {
+      const stageSignal = optionalGitHubStageSignal(signal);
       const { payload, identity } = issueIdentity(task);
       const githubClient = assertGithub(github);
       const target = `${payload.repositoryFullName}#${payload.subjectNumber}`;
       let action: "none" | "close" | "delete" = "none";
       try {
-        action = await spamHandlingMode(payload.repositoryFullName);
+        action = await withIssueReadBudget(stageSignal, OPTIONAL_DB_READ_MS, () => spamHandlingMode(payload.repositoryFullName), "none");
+        stageSignal.throwIfAborted();
         if (action === "close") {
-          await closeSpamIssue(githubClient, payload, identity, verdict.reason);
+          await closeSpamIssue(githubClient, payload, identity, verdict.reason, stageSignal);
         } else if (action === "delete") {
           try {
             await githubClient.deleteIssue({
@@ -983,8 +1015,9 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
               owner: identity.owner,
               name: identity.name,
               number: payload.subjectNumber,
-            });
+            }, stageSignal);
           } catch (error) {
+            stageSignal.throwIfAborted();
             if (
               error instanceof GitHubApiError &&
               error.category === "authentication_failed"
@@ -998,6 +1031,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
                 payload,
                 identity,
                 verdict.reason,
+                stageSignal,
               );
             } else {
               throw error;
@@ -1009,7 +1043,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
         logger.warn({ err: error, target, action }, "spam handling failed");
       }
       try {
-        await writeAuditLog(database.db, {
+        await writeOptionalIssueMetadata(signal, (tx) => writeAuditLog(tx, {
           actor: "system",
           action: "issue.spam_handled",
           target,
@@ -1018,7 +1052,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
             reason: verdict.reason,
             confidence: verdict.confidence,
           },
-        });
+        }));
       } catch (error) {
         logger.warn({ err: error, target }, "spam audit log write failed");
       }

@@ -22,6 +22,7 @@ import {
 } from "../../../packages/task-engine/src/index.js";
 import { reconcileCheckRuns } from "./check-runs.js";
 import { memoryConsolidationSweep } from "./consolidation.js";
+import { reconcileIssueComments } from "./issue-comments.js";
 import {
   createMaintenance,
   maintenanceHealth,
@@ -94,6 +95,24 @@ const maintenance = createMaintenance({
             logger.warn(
               { err: error, publicationId },
               "Check Run completion pending; will retry",
+            ),
+        });
+      },
+    },
+    {
+      name: "issue-comments",
+      intervalMs: 10_000,
+      run: async (signal) => {
+        const github = await githubProvider.get();
+        if (!github || signal.aborted) return 0;
+        return reconcileIssueComments({
+          db: database.db,
+          github,
+          signal,
+          onError: (error, publicationId) =>
+            logger.warn(
+              { err: error, publicationId },
+              "Issue comment reconciliation pending; will retry",
             ),
         });
       },

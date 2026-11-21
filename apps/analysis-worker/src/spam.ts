@@ -32,20 +32,21 @@ export async function closeSpamIssue(
   payload: { installationId: string; subjectNumber: number },
   identity: { owner: string; name: string },
   reason: string,
+  signal: AbortSignal,
 ): Promise<void> {
-  await githubClient.createIssueComment({
+  const target = {
     installationId: payload.installationId,
     owner: identity.owner,
     name: identity.name,
     number: payload.subjectNumber,
-    body: spamCloseComment(reason),
-  });
-  await githubClient.closeIssue({
-    installationId: payload.installationId,
-    owner: identity.owner,
-    name: identity.name,
-    number: payload.subjectNumber,
-  });
+  };
+  signal.throwIfAborted();
+  await githubClient.createIssueComment(
+    { ...target, body: spamCloseComment(reason) },
+    signal,
+  );
+  signal.throwIfAborted();
+  await githubClient.closeIssue(target, signal);
 }
 
 function spamCloseComment(reason: string): string {

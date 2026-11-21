@@ -18,7 +18,7 @@ type FileReader = {
     name: string;
     path: string;
     ref: string;
-  }): Promise<{ content?: string } | null | undefined>;
+  }, signal: AbortSignal): Promise<{ content?: string } | null | undefined>;
   /** 列目录条目（contents API），供兜底命中按关键词扫仓用。 */
   listDirectory(args: {
     installationId: string;
@@ -26,7 +26,7 @@ type FileReader = {
     name: string;
     path: string;
     ref: string;
-  }): Promise<{ name: string; path: string; type: string }[]>;
+  }, signal: AbortSignal): Promise<{ name: string; path: string; type: string }[]>;
 };
 
 /** 审查/缺陷请求里用户点名的文件路径（如 main.py、backend/app.ts）。最多取 2 个。 */
@@ -85,6 +85,7 @@ function extractIssueKeywords(context: IssueContext): Set<string> {
 async function listRepoSourcePaths(
   reader: FileReader,
   context: IssueContext,
+  signal: AbortSignal,
 ): Promise<string[]> {
   const files: string[] = [];
   const queue: string[] = [""];
@@ -99,6 +100,8 @@ async function listRepoSourcePaths(
     depth += 1;
     if (depth > FALLBACK_MAX_DEPTH) break;
     for (let i = 0; i < level && queue.length > 0; i++) {
+      signal.throwIfAborted();
+      if (files.length >= FALLBACK_MAX_FILES || visited >= FALLBACK_MAX_FILES * 2) return files;
       const dir = queue.shift()!;
       visited += 1;
       const entries = await reader
@@ -108,8 +111,11 @@ async function listRepoSourcePaths(
           name: context.repository.name,
           path: dir,
           ref: "HEAD",
-        })
-        .catch(() => []);
+        }, signal)
+        .catch(() => {
+          signal.throwIfAborted();
+          return [];
+        });
       for (const e of entries) {
         if (e.type === "file") {
           if (
@@ -140,13 +146,7 @@ function scorePathByKeywords(path: string, terms: Set<string>): number {
 }
 
 /** 兜底命中：无点名文件时，按 issue 关键词挑最相关的源码（最多 2 个）。 */
-async function findRelevantFiles(
-  reader: FileReader,
-  context: IssueContext,
-): Promise<string[]> {
-  const terms = extractIssueKeywords(context);
-  if (terms.size === 0) return [];
-  const paths = await listRepoSourcePaths(reader, context);
+function findRelevantFiles(paths: string[], terms: Set<string>): string[] {
   return paths
     .map((path) => ({ path, score: scorePathByKeywords(path, terms) }))
     .filter((x) => x.score > 0)
@@ -160,9 +160,11 @@ async function readPreloadFiles(
   reader: FileReader,
   context: IssueContext,
   paths: string[],
+  signal: AbortSignal,
 ): Promise<{ path: string; content: string }[]> {
   const out: { path: string; content: string }[] = [];
   for (const path of paths) {
+    signal.throwIfAborted();
     try {
       const file = await reader.getFileContents({
         installationId: context.installationId,
@@ -170,11 +172,12 @@ async function readPreloadFiles(
         name: context.repository.name,
         path,
         ref: "HEAD",
-      });
+      }, signal);
       if (file && file.content) {
         out.push({ path, content: file.content.slice(0, PRELOAD_MAX_CHARS) });
       }
     } catch {
+      signal.throwIfAborted();
       // 文件不存在或读取失败 → 忽略，保留其它可读文件。
     }
   }
@@ -254,27 +257,26 @@ export function parseFilePicks(text: string, candidates: string[]): string[] {
 export async function preloadTargetFiles(
   reader: FileReader,
   context: IssueContext,
+  signal: AbortSignal,
   pickWithModel?: (
     candidatePaths: string[],
     ctx: IssueContext,
+    signal: AbortSignal,
   ) => Promise<string[]>,
 ): Promise<{ path: string; content: string }[]> {
+  signal.throwIfAborted();
   const explicit = extractTargetFiles(context);
-  if (explicit.length > 0) return readPreloadFiles(reader, context, explicit);
-  const pathHits = await findRelevantFiles(reader, context).catch(() => []);
-  if (pathHits.length > 0) return readPreloadFiles(reader, context, pathHits);
-  // 路径打分未命中（中文语义居多）→ 内容级检索：让模型挑最相关源码。
-  if (pickWithModel) {
-    const candidatePaths = await listRepoSourcePaths(reader, context).catch(
-      () => [],
-    );
-    if (candidatePaths.length > 0) {
-      const modelPicks = await pickWithModel(candidatePaths, context).catch(
-        () => [],
-      );
-      if (modelPicks.length > 0)
-        return readPreloadFiles(reader, context, modelPicks);
-    }
+  if (explicit.length > 0) return readPreloadFiles(reader, context, explicit, signal);
+  const terms = extractIssueKeywords(context);
+  if (terms.size === 0 && !pickWithModel) return [];
+  // Reuse the same bounded scan for keyword matching and the model fallback.
+  const candidatePaths = await listRepoSourcePaths(reader, context, signal);
+  signal.throwIfAborted();
+  const pathHits = findRelevantFiles(candidatePaths, terms);
+  if (pathHits.length > 0) return readPreloadFiles(reader, context, pathHits, signal);
+  if (pickWithModel && candidatePaths.length > 0) {
+    const modelPicks = await pickWithModel(candidatePaths, context, signal);
+    return readPreloadFiles(reader, context, modelPicks, signal);
   }
   return [];
 }
@@ -293,9 +295,11 @@ export async function verifyProposedChangePaths(input: {
   owner: string;
   name: string;
   changes: readonly ProposedChange[];
+  signal: AbortSignal;
 }): Promise<ProposedChange[]> {
   const kept: ProposedChange[] = [];
   for (const change of input.changes) {
+    input.signal.throwIfAborted();
     if (!change.path || change.path === CODE_ACCESS_UNKNOWN_PATH) {
       kept.push(change);
       continue;
@@ -307,7 +311,8 @@ export async function verifyProposedChangePaths(input: {
         name: input.name,
         path: change.path,
         ref: "HEAD",
-      });
+      }, input.signal);
+      input.signal.throwIfAborted();
       // getFileContents 对目录/非文件/404 返回 null → 视为不存在，移除。
       if (file) {
         kept.push(change);
@@ -318,6 +323,7 @@ export async function verifyProposedChangePaths(input: {
         );
       }
     } catch {
+      input.signal.throwIfAborted();
       // 校验失败（网络/限流等）不误删，保留原建议。
       kept.push(change);
     }
