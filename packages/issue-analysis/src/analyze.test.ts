@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   ModelCandidate,
   ModelProviderAdapter,
 } from "../../../packages/domain/src/index.js";
 import type { IssueContext } from "./context.js";
-import type { IssueResultSection } from "./prompt.js";
+import { CODE_ACCESS_UNKNOWN_PATH, type IssueResultSection } from "./prompt.js";
+import { buildIssueAnalysisComment } from "./comment.js";
 import { analyzeIssue, type IssueAnalyzerOptions } from "./analyze.js";
 
 const candidate: ModelCandidate = {
@@ -524,6 +525,156 @@ describe("按类别分组的 Issue 结果区块 (#28)", () => {
     // bug 组未配置 → 回落通用组：只保留 summary + missing_information，其余清空。
     expect(outcome.analysis.result.missingInformation).toEqual(["OS version"]);
     expect(outcome.analysis.result.evidence).toEqual([]);
+  });
+});
+
+describe("enhancement source grounding", () => {
+  const path = "apps/web/src/theme.ts";
+  const excerpt = 'export const currentTheme = "light";';
+  const enhancement = {
+    ...context,
+    issue: {
+      ...context.issue,
+      title: "增加功能",
+      body: "希望支持切换外观",
+      labels: ["enhancement"],
+    },
+  };
+  const suggested = [
+    { path, locator: "L1", change: "读取用户的外观设置" },
+    {
+      path: "apps/web/src/not-read.ts",
+      locator: "L11",
+      change: "在界面增加切换按钮",
+    },
+  ];
+  const result = JSON.stringify({
+    ...JSON.parse(validIssueJson),
+    category: "feature",
+    evidence: [{ kind: "reproduction_steps", excerpt }],
+    proposedChanges: suggested,
+  });
+
+  it("repairs invalid output with the actual read_file excerpt and audits it as file evidence", async () => {
+    const invoke = vi
+      .fn<ModelProviderAdapter["invoke"]>()
+      .mockResolvedValueOnce({
+        content: "",
+        usage: { inputTokens: 10, outputTokens: 5 },
+        toolCalls: [
+          {
+            id: "read",
+            name: "read_file",
+            arguments: JSON.stringify({ path }),
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        content: "{}",
+        usage: { inputTokens: 10, outputTokens: 5 },
+      })
+      .mockResolvedValueOnce({
+        content: result,
+        usage: { inputTokens: 10, outputTokens: 5 },
+      });
+    const outcome = await analyzeIssue(
+      {
+        ...options([{ provider: candidate.provider, invoke }], [candidate]),
+        evidenceGrounding: { mode: "enforce" },
+        tools: {
+          forceToolUse: true,
+          context: {
+            client: {
+              getFileContents: async () => ({
+                content: `${excerpt}\nnot included in the excerpt`,
+              }),
+              listDirectory: async () => [],
+            },
+            installationId: "42",
+            owner: "o",
+            name: "r",
+            ref: "HEAD",
+            maxFileBytes: Buffer.byteLength(excerpt),
+          },
+        },
+      },
+      enhancement,
+    );
+
+    expect(invoke).toHaveBeenCalledTimes(3);
+    const repair = invoke.mock.calls[2]?.[1]?.messages
+      .map((message) => message.content)
+      .join("\n");
+    expect(repair).toContain(`### ${path}\n${excerpt}`);
+    expect(repair).not.toContain("not included in the excerpt");
+    expect(outcome).toMatchObject({
+      outcome: "valid",
+      analysis: {
+        evidenceAudit: {
+          matches: [
+            { verified: true, source: { kind: "file", key: path, line: 1 } },
+          ],
+        },
+        result: {
+          proposedChanges: [
+            suggested[0],
+            { path: CODE_ACCESS_UNKNOWN_PATH, change: suggested[1]?.change },
+          ],
+        },
+      },
+    });
+  });
+
+  it("does not treat directory listing as source and visibly degrades without a file locator", async () => {
+    const invoke = vi
+      .fn<ModelProviderAdapter["invoke"]>()
+      .mockResolvedValueOnce({
+        content: "",
+        usage: { inputTokens: 10, outputTokens: 5 },
+        toolCalls: [{ id: "list", name: "list_directory", arguments: "{}" }],
+      })
+      .mockResolvedValue({
+        content: result,
+        usage: { inputTokens: 10, outputTokens: 5 },
+      });
+    const getFileContents = vi.fn(async () => null);
+    const outcome = await analyzeIssue(
+      {
+        ...options([{ provider: candidate.provider, invoke }], [candidate]),
+        tools: {
+          maxRounds: 3,
+          forceToolUse: true,
+          context: {
+            client: {
+              getFileContents,
+              listDirectory: async () => [
+                { name: "theme.ts", path, type: "file" },
+              ],
+            },
+            installationId: "42",
+            owner: "o",
+            name: "r",
+            ref: "HEAD",
+          },
+        },
+      },
+      enhancement,
+    );
+
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(getFileContents).not.toHaveBeenCalled();
+    expect(outcome.outcome).toBe("valid");
+    if (outcome.outcome !== "valid") return;
+    expect(outcome.analysis.sourceRead).toBe("unavailable");
+    expect(outcome.analysis.result.proposedChanges).toEqual(
+      suggested.map(({ change }) => ({
+        path: CODE_ACCESS_UNKNOWN_PATH,
+        change,
+      })),
+    );
+    expect(buildIssueAnalysisComment(outcome.analysis)).toContain(
+      "本次深度分析未读到文件内容",
+    );
   });
 });
 

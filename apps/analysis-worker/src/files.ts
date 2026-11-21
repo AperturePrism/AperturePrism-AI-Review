@@ -31,7 +31,7 @@ type FileReader = {
 
 /** 审查/缺陷请求里用户点名的文件路径（如 main.py、backend/app.ts）。最多取 2 个。 */
 const TARGET_FILE_RE =
-  /([\w.\-/]+\.(?:py|js|ts|tsx|jsx|json|go|rs|java|c|cc|cpp|h|hpp|sh|ps1|bat|mjs|cjs|css|html|yaml|yml|toml|md))/gi;
+  /([\w.\-/]+\.(?:py|js|ts|tsx|jsx|json|go|rs|java|c|cc|cpp|h|hpp|sh|ps1|bat|mjs|cjs|css|html|yaml|yml|toml|md))(?![\w./-])/gi;
 
 const PRELOAD_MAX_CHARS = 60_000;
 
@@ -40,7 +40,14 @@ function extractTargetFiles(context: IssueContext): string[] {
   const found: string[] = [];
   for (const match of hay.matchAll(TARGET_FILE_RE)) {
     const path = match[1];
-    if (path && path.length <= 160 && !path.includes(" ")) found.push(path);
+    if (
+      path &&
+      path.length <= 160 &&
+      !path.startsWith("/") &&
+      !path.split("/").includes("..")
+    ) {
+      found.push(path.replace(/^\.\//, ""));
+    }
   }
   return [...new Set(found)].slice(0, 2);
 }
@@ -54,7 +61,8 @@ function extractTargetFiles(context: IssueContext): string[] {
  */
 const FALLBACK_MAX_FILES = 200;
 
-const FALLBACK_MAX_DEPTH = 3;
+const FALLBACK_MAX_DEPTH = 4;
+const FALLBACK_MAX_DIRS = FALLBACK_MAX_FILES * 2;
 
 /** 需跳过的目录（依赖/产物/版本控制/虚拟环境）。 */
 const FALLBACK_SKIP_DIR =
@@ -86,45 +94,41 @@ async function listRepoSourcePaths(
   reader: FileReader,
   context: IssueContext,
 ): Promise<string[]> {
-  const files: string[] = [];
-  const queue: string[] = [""];
-  let visited = 0;
-  let depth = 0;
-  while (
-    queue.length > 0 &&
-    files.length < FALLBACK_MAX_FILES &&
-    visited < FALLBACK_MAX_FILES * 2
-  ) {
-    const level = queue.length;
-    depth += 1;
-    if (depth > FALLBACK_MAX_DEPTH) break;
-    for (let i = 0; i < level && queue.length > 0; i++) {
-      const dir = queue.shift()!;
-      visited += 1;
-      const entries = await reader
-        .listDirectory({
-          installationId: context.installationId,
-          owner: context.repository.owner,
-          name: context.repository.name,
-          path: dir,
-          ref: "HEAD",
-        })
-        .catch(() => []);
-      for (const e of entries) {
-        if (e.type === "file") {
-          if (
-            FALLBACK_SOURCE_EXT.test(e.path) &&
-            !/\.(min|bundle|chunk)\.\w+$/.test(e.path)
-          ) {
-            files.push(e.path);
-          }
-        } else if (e.type === "dir" && !FALLBACK_SKIP_DIR.test(e.path)) {
-          queue.push(e.path);
+  const files = new Set<string>();
+  const queue = [{ path: "", depth: 1 }];
+  const discovered = new Set([""]);
+  for (const directory of queue) {
+    const entries = await reader
+      .listDirectory({
+        installationId: context.installationId,
+        owner: context.repository.owner,
+        name: context.repository.name,
+        path: directory.path,
+        ref: "HEAD",
+      })
+      .catch(() => []);
+    for (const entry of entries) {
+      if (entry.type === "file") {
+        if (
+          FALLBACK_SOURCE_EXT.test(entry.path) &&
+          !/\.(min|bundle|chunk)\.\w+$/.test(entry.path)
+        ) {
+          files.add(entry.path);
+          if (files.size === FALLBACK_MAX_FILES) return [...files];
         }
+      } else if (
+        entry.type === "dir" &&
+        directory.depth < FALLBACK_MAX_DEPTH &&
+        queue.length < FALLBACK_MAX_DIRS &&
+        !FALLBACK_SKIP_DIR.test(entry.path) &&
+        !discovered.has(entry.path)
+      ) {
+        discovered.add(entry.path);
+        queue.push({ path: entry.path, depth: directory.depth + 1 });
       }
     }
   }
-  return files;
+  return [...files];
 }
 
 /** 按关键词给路径打分：命中文件名加权更高。 */
@@ -140,13 +144,7 @@ function scorePathByKeywords(path: string, terms: Set<string>): number {
 }
 
 /** 兜底命中：无点名文件时，按 issue 关键词挑最相关的源码（最多 2 个）。 */
-async function findRelevantFiles(
-  reader: FileReader,
-  context: IssueContext,
-): Promise<string[]> {
-  const terms = extractIssueKeywords(context);
-  if (terms.size === 0) return [];
-  const paths = await listRepoSourcePaths(reader, context);
+function findRelevantFiles(paths: string[], terms: Set<string>): string[] {
   return paths
     .map((path) => ({ path, score: scorePathByKeywords(path, terms) }))
     .filter((x) => x.score > 0)
@@ -171,9 +169,8 @@ async function readPreloadFiles(
         path,
         ref: "HEAD",
       });
-      if (file && file.content) {
-        out.push({ path, content: file.content.slice(0, PRELOAD_MAX_CHARS) });
-      }
+      const content = file?.content?.slice(0, PRELOAD_MAX_CHARS);
+      if (content?.trim()) out.push({ path, content });
     } catch {
       // 文件不存在或读取失败 → 忽略，保留其它可读文件。
     }
@@ -259,24 +256,34 @@ export async function preloadTargetFiles(
     ctx: IssueContext,
   ) => Promise<string[]>,
 ): Promise<{ path: string; content: string }[]> {
-  const explicit = extractTargetFiles(context);
-  if (explicit.length > 0) return readPreloadFiles(reader, context, explicit);
-  const pathHits = await findRelevantFiles(reader, context).catch(() => []);
-  if (pathHits.length > 0) return readPreloadFiles(reader, context, pathHits);
-  // 路径打分未命中（中文语义居多）→ 内容级检索：让模型挑最相关源码。
-  if (pickWithModel) {
-    const candidatePaths = await listRepoSourcePaths(reader, context).catch(
-      () => [],
-    );
-    if (candidatePaths.length > 0) {
-      const modelPicks = await pickWithModel(candidatePaths, context).catch(
-        () => [],
-      );
-      if (modelPicks.length > 0)
-        return readPreloadFiles(reader, context, modelPicks);
-    }
-  }
-  return [];
+  const tried = new Set<string>();
+  const read = (paths: readonly string[]) => {
+    const candidates = [...new Set(paths)]
+      .filter((path) => !tried.has(path))
+      .slice(0, 2);
+    for (const path of candidates) tried.add(path);
+    return readPreloadFiles(reader, context, candidates);
+  };
+
+  const explicit = await read(extractTargetFiles(context));
+  if (explicit.length > 0) return explicit;
+
+  const terms = extractIssueKeywords(context);
+  if (terms.size === 0 && !pickWithModel) return [];
+  const paths = await listRepoSourcePaths(reader, context);
+  const ranked = await read(
+    findRelevantFiles(
+      paths.filter((path) => !tried.has(path)),
+      terms,
+    ),
+  );
+  if (ranked.length > 0 || !pickWithModel) return ranked;
+
+  const candidates = paths.filter((path) => !tried.has(path));
+  if (candidates.length === 0) return [];
+  const allowed = new Set(candidates);
+  const picks = await pickWithModel(candidates, context).catch(() => []);
+  return read(picks.filter((path) => allowed.has(path)));
 }
 
 /**
