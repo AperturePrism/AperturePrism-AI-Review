@@ -29,6 +29,7 @@ import {
   isIssueEditEvent,
 } from "../../../packages/issue-analysis/src/index.js";
 import { resolveRepositoryId } from "./memory.js";
+import { remainingDeadlineMs } from "./deadline.js";
 import { issueMinChangeRatio, resolveIssueSettings } from "./preferences.js";
 import { database, logger } from "./runtime.js";
 import { issueIdentity } from "./task.js";
@@ -643,14 +644,14 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
           "issue vision: routing to vision model candidates",
         );
       // 分析选项按候选模型参数化：视觉失败时复用同一套配置，仅换文本模型候选。
-      // capDeadlineMs 允许分阶段限制时间——视觉阶段给短 budget，失败后把剩余时间留给文本。
+      // deadlineMs 由调用方按「是否读仓」选择预算（见下方 stageDeadlineMs）。
       const buildAnalysisOptions = (
         candidates: ModelCandidate[],
-        capDeadlineMs: number,
+        deadlineMs: number,
       ) => ({
         adapters,
         candidates,
-        deadlineMs: capDeadlineMs,
+        deadlineMs,
         retryPolicy: budgets.retryPolicy,
         signal,
         // exactOptionalPropertyTypes：undefined 不能显式赋给可选属性，条件展开。
@@ -691,15 +692,26 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
             }
           : {}),
       });
+      // 视觉与文本分析共用同一套时间预算（issue #174）：视觉模型处理图片本身
+      // 就比纯文本慢（见 runtime.ts），叠加读仓工具循环后旧的 60s 上限必然超时，
+      // 于是「模型明明支持视觉」也总会整段回退文本、评论标注视觉不可用。
+      // 带读仓工具时用深读预算，否则用普通分析预算；真正的调用失败仍在
+      // catch 里回退文本，行为与之前一致。
+      const stageDeadlineMs =
+        deep && shouldReadRepo
+          ? budgets.deepAnalysisDeadlineMs
+          : budgets.analysisDeadlineMs;
+      const stageDeadlineAt = Date.now() + stageDeadlineMs;
+      const remainingStageDeadlineMs = () =>
+        remainingDeadlineMs(stageDeadlineAt);
       // 视觉模型优先；若视觉模型服务不可用导致分析失败，回退到文本模型重跑一次
       // （丢弃图片，保证带图 Issue 也能出分析，不因图片理解失败而整条失败）。
       if (useVisionModel) {
-        // 视觉阶段用较短 budget：视觉模型不可用时快速失败，把剩余时间留给文本兜底。
         try {
           return await analyzeIssue(
             buildAnalysisOptions(
               issueVisionCandidates,
-              Math.min(budgets.analysisDeadlineMs, 60_000),
+              remainingStageDeadlineMs(),
             ),
             ctx,
           );
@@ -714,7 +726,7 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
             "issue vision: vision model failed, falling back to text analysis",
           );
           const fallback = await analyzeIssue(
-            buildAnalysisOptions(issueCandidates, budgets.analysisDeadlineMs),
+            buildAnalysisOptions(issueCandidates, remainingStageDeadlineMs()),
             { ...ctx, images: [] },
           );
           // 显示层标记：仅当文本分析产出有效结果时标注「视觉未参与」。
@@ -728,13 +740,8 @@ export function createIssueWorkflow(input: IssueWorkflowInput): TaskHandler {
           return fallback;
         }
       }
-      // 深读（读仓+工具循环）单独给更大 deadline，避免大上下文多轮推理超时。
-      const deadlineMs =
-        deep && shouldReadRepo
-          ? budgets.deepAnalysisDeadlineMs
-          : budgets.analysisDeadlineMs;
       return analyzeIssue(
-        buildAnalysisOptions(issueCandidates, deadlineMs),
+        buildAnalysisOptions(issueCandidates, remainingStageDeadlineMs()),
         ctx,
       );
     },
