@@ -114,6 +114,7 @@ export function settingDefaultValue(key: string): string {
     return fallback === undefined ? "" : String(fallback);
   }
   if (key === "spam_handling") return "close";
+  if (key === "pr_auto_merge_method") return "squash";
   if (key === "review_rules_global_tier")
     return DEFAULT_GLOBAL_REVIEW_RULES_LIMIT_TIER;
   if (key === "log_level") return config.logLevel;

@@ -45,9 +45,15 @@ export function AnalysisSettingsPage() {
       />
 
       <SettingsSection
-        keys={["pr_check_run", "pr_auto_review"]}
+        keys={[
+          "pr_auto_merge_enabled",
+          "pr_auto_merge_method",
+          "pr_auto_merge_required_checks",
+          "pr_check_run",
+          "pr_auto_review",
+        ]}
         title="PR 审查"
-        desc="审查结果如何回写到 Pull Request"
+        desc="审查结果如何回写到 Pull Request；自动合并为全局默认，可在「已安装仓库」页按仓库覆盖"
       />
 
       <section className="panel">

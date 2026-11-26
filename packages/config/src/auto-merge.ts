@@ -1,4 +1,4 @@
-/** 自动合并只读取仓库显式配置；非法配置关闭执行，不能悄悄减少必需检查。 */
+/** 自动合并按「仓库显式配置优先、全局默认兜底」解析；非法配置关闭执行，不能悄悄减少必需检查。 */
 export type PullRequestMergeMethod = "merge" | "squash" | "rebase";
 
 export type AutoMergeSettings = {
@@ -52,6 +52,22 @@ export function parseRequiredAutoMergeChecks(
       );
   }
   return [...new Set(names)];
+}
+
+/**
+ * 合并全局默认与仓库覆盖：每个键单独取「仓库有值则仓库、否则全局」，未配置的键
+ * 仍回落到应用默认。这样全局开关能一处开启所有仓库，仓库也能只覆盖合并方式。
+ */
+export function resolveAutoMergeSettings(
+  repoOverrides: ReadonlyMap<string, string>,
+  globals: ReadonlyMap<string, string>,
+): AutoMergeSettings {
+  const effective = new Map<string, string>();
+  for (const key of AUTO_MERGE_SETTING_KEYS) {
+    const value = repoOverrides.get(key) ?? globals.get(key);
+    if (value !== undefined) effective.set(key, value);
+  }
+  return parseAutoMergeSettings(effective);
 }
 
 /** 未启用、拼错合并方式、损坏的检查列表都不能产生自动写入。 */

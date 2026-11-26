@@ -80,13 +80,14 @@ const REASONS: Record<string, string> = {
 };
 
 function settingsFromItems(items: RepositorySettingItem[]): AutoMergeSettings {
-  const overrides = new Map(
-    items
-      .filter((item) => item.overridden)
-      .map((item) => [item.key, item.value]),
-  );
+  // 仓库显式覆盖优先，未覆盖的键跟随全局默认（与 worker / scheduler 一致）。
+  const effective = new Map<string, string>();
+  for (const item of items) {
+    const value = item.overridden ? item.value : item.globalValue;
+    if (item.overridden || value !== "") effective.set(item.key, value);
+  }
   // 使用与执行端相同的纯解析器；损坏的配置也显示为关闭。
-  const parsed = parseAutoMergeSettings(overrides);
+  const parsed = parseAutoMergeSettings(effective);
   return { ...parsed, requiredChecks: [...parsed.requiredChecks] };
 }
 
@@ -222,8 +223,8 @@ export function AutoMergePanel({
         </div>
       </div>
       <p className="faint" style={{ fontSize: 12, lineHeight: 1.7 }}>
-        对本仓库明确开启后，平台审查与质量门禁通过、所有 GitHub
-        检查通过时，自动合并已审查的提交。
+        默认跟随「分析设置 → PR 审查」的全局开关；在本仓库保存后按本仓库配置覆盖。
+        平台审查与质量门禁通过、所有 GitHub 检查通过时，自动合并已审查的提交。
         检查失败、草稿或分支保护条件未满足时等待；出现新提交后必须重新审查。GitHub
         要求的人工审批仍然有效。
       </p>

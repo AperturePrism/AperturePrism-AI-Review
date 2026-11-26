@@ -18,11 +18,12 @@ import {
   analysisTasks,
   AUTO_MERGE_SETTING_KEYS,
   outboxEvents,
-  parseAutoMergeSettings,
   pullRequestAutoMerges,
   repositories,
   repositorySettings,
+  resolveAutoMergeSettings,
   subjectResults,
+  systemSettings,
   type DatabaseClient,
 } from "../../../packages/database/src/index.js";
 import type { GitHubClient } from "../../../packages/github-adapter/src/index.js";
@@ -429,14 +430,23 @@ export async function reconcilePullRequestAutoMerges(input: {
               ),
             )
             .for("share");
-          const settings = parseAutoMergeSettings(
+          // 与 worker 一致：仓库显式配置优先，未覆盖的键跟随全局默认。
+          const globalRows = await tx
+            .select({
+              key: systemSettings.key,
+              value: systemSettings.value,
+            })
+            .from(systemSettings)
+            .where(inArray(systemSettings.key, [...AUTO_MERGE_SETTING_KEYS]));
+          const settings = resolveAutoMergeSettings(
             new Map(settingsRows.map((row) => [row.key, row.value])),
+            new Map(globalRows.map((row) => [row.key, row.value])),
           );
           if (!settings.enabled)
             return save({
               status: "canceled",
               reason: "disabled",
-              message: "仓库已关闭自动合并，或配置无效",
+              message: "全局或仓库已关闭自动合并，或配置无效",
             });
           mergeMethod = settings.method;
           const payload = parsePrReviewTaskPayload(task.payload);

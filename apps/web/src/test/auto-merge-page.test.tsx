@@ -106,7 +106,7 @@ afterEach(() => {
 });
 
 describe("检查通过自动合并：页面到真实 API 绑定", () => {
-  it("从已安装仓库打开配置，默认关闭且不沿用全局开启值", async () => {
+  it("从已安装仓库打开配置，未覆盖时沿用全局开启值", async () => {
     settingsItems = [setting("pr_auto_merge_enabled", "", false, "true")];
     const user = userEvent.setup();
     render(
@@ -123,7 +123,7 @@ describe("检查通过自动合并：页面到真实 API 绑定", () => {
     const enabled = await screen.findByRole("checkbox", {
       name: "在本仓库开启检查通过自动合并",
     });
-    expect(enabled).not.toBeChecked();
+    expect(enabled).toBeChecked();
     expect(screen.getByRole("combobox", { name: "合并方式" })).toHaveValue(
       "squash",
     );

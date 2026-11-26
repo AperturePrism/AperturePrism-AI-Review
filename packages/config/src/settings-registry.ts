@@ -464,7 +464,7 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
     envVar: null,
     hotReload: "poll",
     label: "检查通过后自动合并",
-    hint: "默认关闭；需在仓库设置显式启用。审查门禁与所有 GitHub 检查通过、PR 版本一致且满足分支保护时执行，不使用全局值启用。",
+    hint: "全局默认开关：开启后，未单独覆盖的仓库在 AI 审查门禁、工作台门禁与全部 GitHub 检查通过、PR 版本一致且满足分支保护时自动合并。可在「已安装仓库」的自动合并面板按仓库覆盖；默认关闭。",
   },
   {
     key: "pr_auto_merge_method",
@@ -475,7 +475,7 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
     envVar: null,
     hotReload: "poll",
     label: "自动合并方式",
-    hint: "在仓库自动合并设置中选择 squash、merge 或 rebase；默认 squash，仍须仓库允许该方式。",
+    hint: "全局默认合并方式，可选 squash、merge 或 rebase；可在仓库自动合并面板单独覆盖。默认 squash，仍须仓库允许该方式。",
     options: ["squash", "merge", "rebase"],
   },
   {
@@ -487,7 +487,7 @@ export const SETTINGS_REGISTRY: readonly SettingSpec[] = [
     envVar: null,
     hotReload: "poll",
     label: "自动合并必需检查",
-    hint: "准确的检查名称，最多 100 项、每项 200 字；支持 JSON 数组或逗号/换行列表。缺失必需检查会等待，空列表仍要求全部上报检查通过。",
+    hint: "全局默认的必需检查名称，最多 100 项、每项 200 字；支持 JSON 数组或逗号/换行列表，可按仓库覆盖。缺失必需检查会等待，空列表仍要求全部上报检查通过。",
     multiline: true,
     maxLength: MAX_AUTO_MERGE_CHECKS_TEXT,
   },

@@ -4,10 +4,12 @@
  */
 import { and, eq, inArray } from "drizzle-orm";
 import {
+  AUTO_MERGE_SETTING_KEYS,
   getRepositorySettingsFor,
-  parseAutoMergeSettings,
+  loadSettings,
   pullRequestAutoMerges,
   queuePullRequestAutoMerge,
+  resolveAutoMergeSettings,
   type DatabaseClient,
 } from "../../../packages/database/src/index.js";
 import { reviewAllowsAutoMerge } from "../../../packages/pr-review/src/auto-merge.js";
@@ -26,13 +28,12 @@ export async function queueReviewedAutoMerge(
   signal?: AbortSignal,
 ): Promise<void> {
   signal?.throwIfAborted();
-  const settings = parseAutoMergeSettings(
-    await getRepositorySettingsFor(db, input.repositoryId, [
-      "pr_auto_merge_enabled",
-      "pr_auto_merge_method",
-      "pr_auto_merge_required_checks",
-    ]),
-  );
+  // 仓库显式配置优先；未覆盖的键跟随「分析设置 → PR 审查」的全局默认。
+  const [repoOverrides, globals] = await Promise.all([
+    getRepositorySettingsFor(db, input.repositoryId, AUTO_MERGE_SETTING_KEYS),
+    loadSettings(db, AUTO_MERGE_SETTING_KEYS),
+  ]);
+  const settings = resolveAutoMergeSettings(repoOverrides, globals);
   signal?.throwIfAborted();
   if (!settings.enabled || !reviewAllowsAutoMerge(input.result)) {
     // 人工重跑仍使用同一个 taskId；新的失败结论必须撤销旧的通过意图。
