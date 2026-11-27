@@ -1,4 +1,4 @@
-/** 仓库自动合并的配置与执行记录；配置整体保存，避免混用新旧检查条件。 */
+/** 仓库自动合并的配置与执行记录；一次请求原子提交，null 键表示回到跟随全局。 */
 import { authHeaders, notifyUnauthorized } from "../auth";
 import { bumpCache, getJson } from "./http";
 
@@ -10,6 +10,13 @@ export type AutoMergeSettings = {
   enabled: boolean;
   method: AutoMergeMethod;
   requiredChecks: string[];
+};
+
+/** 写接口按键盘值覆盖；null 表示删除该仓库覆盖、回到跟随全局。 */
+export type AutoMergeSettingsUpdate = {
+  enabled: boolean | null;
+  method: AutoMergeMethod | null;
+  requiredChecks: string[] | null;
 };
 
 export type AutoMergeItem = {
@@ -45,7 +52,7 @@ export async function fetchAutoMergeHistory(
 
 export async function saveAutoMergeSettings(
   repositoryId: string,
-  settings: AutoMergeSettings,
+  settings: AutoMergeSettingsUpdate,
 ): Promise<void> {
   const response = await fetch(
     `/repositories/${encodeURIComponent(repositoryId)}/auto-merge/settings`,

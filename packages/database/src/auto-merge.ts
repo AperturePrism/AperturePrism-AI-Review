@@ -12,6 +12,7 @@ import type { PullRequestMergeMethod } from "../../config/src/auto-merge.js";
 export {
   AUTO_MERGE_SETTING_KEYS,
   parseAutoMergeSettings,
+  resolveAutoMergeSettings,
   type AutoMergeSettings,
   type PullRequestMergeMethod,
 } from "../../config/src/auto-merge.js";

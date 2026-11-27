@@ -75,19 +75,44 @@ const REASONS: Record<string, string> = {
   github_error: "GitHub 请求失败，稍后重试",
   github_merge_refused: "GitHub 尚未允许合并",
   stale_head: "PR 已有新提交，需要重新审查",
-  disabled: "本仓库已关闭自动合并",
+  disabled: "全局或本仓库已关闭自动合并",
   merged: "合并成功",
 };
 
 function settingsFromItems(items: RepositorySettingItem[]): AutoMergeSettings {
-  const overrides = new Map(
-    items
-      .filter((item) => item.overridden)
-      .map((item) => [item.key, item.value]),
-  );
+  // 仓库显式覆盖优先，未覆盖的键跟随全局默认（与 worker / scheduler 一致）。
+  const effective = new Map<string, string>();
+  for (const item of items) {
+    const value = item.overridden ? item.value : item.globalValue;
+    if (item.overridden || value !== "") effective.set(item.key, value);
+  }
   // 使用与执行端相同的纯解析器；损坏的配置也显示为关闭。
-  const parsed = parseAutoMergeSettings(overrides);
+  const parsed = parseAutoMergeSettings(effective);
   return { ...parsed, requiredChecks: [...parsed.requiredChecks] };
+}
+
+type FollowGlobal = {
+  enabled: boolean;
+  method: boolean;
+  requiredChecks: boolean;
+};
+
+const ALL_FOLLOW_GLOBAL: FollowGlobal = {
+  enabled: true,
+  method: true,
+  requiredChecks: true,
+};
+
+/** 读取每个键当前是否仍跟随全局；缺失的键按跟随处理。 */
+function followGlobalFromItems(items: RepositorySettingItem[]): FollowGlobal {
+  const overridden = new Set(
+    items.filter((item) => item.overridden).map((item) => item.key),
+  );
+  return {
+    enabled: !overridden.has("pr_auto_merge_enabled"),
+    method: !overridden.has("pr_auto_merge_method"),
+    requiredChecks: !overridden.has("pr_auto_merge_required_checks"),
+  };
 }
 
 function splitChecks(value: string): string[] {
@@ -109,6 +134,8 @@ export function AutoMergePanel({
   const fieldId = useId();
   const panel = useRef<HTMLElement>(null);
   const [settings, setSettings] = useState<AutoMergeSettings | null>(null);
+  const [followGlobal, setFollowGlobal] =
+    useState<FollowGlobal>(ALL_FOLLOW_GLOBAL);
   const [checksDraft, setChecksDraft] = useState("");
   const [history, setHistory] = useState<AutoMergeHistory | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -123,6 +150,14 @@ export function AutoMergePanel({
     panel.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
   }, [repo.id]);
 
+  const applySettings = useCallback((items: RepositorySettingItem[]) => {
+    const next = settingsFromItems(items);
+    setSettings(next);
+    setFollowGlobal(followGlobalFromItems(items));
+    setChecksDraft(next.requiredChecks.join("\n"));
+    return next;
+  }, []);
+
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -136,9 +171,7 @@ export function AutoMergePanel({
       fetchRepositorySettings(repo.id)
         .then((value) => {
           if (!active) return;
-          const next = settingsFromItems(value.items);
-          setSettings(next);
-          setChecksDraft(next.requiredChecks.join("\n"));
+          applySettings(value.items);
         })
         .catch((error: unknown) => {
           if (active) setSettingsError(explainUnknown(error));
@@ -157,7 +190,7 @@ export function AutoMergePanel({
     return () => {
       active = false;
     };
-  }, [repo.id]);
+  }, [repo.id, applySettings]);
 
   const refreshHistory = useCallback(async () => {
     setRefreshing(true);
@@ -177,25 +210,47 @@ export function AutoMergePanel({
     if (!settings || !canManage) return;
     setSaveError(null);
     setNotice(null);
-    let checks: string[];
-    try {
-      checks = splitChecks(checksDraft);
-    } catch (error) {
-      setSaveError(explainUnknown(error));
-      return;
+    let checks: string[] | null = null;
+    if (!followGlobal.requiredChecks) {
+      try {
+        checks = splitChecks(checksDraft);
+      } catch (error) {
+        setSaveError(explainUnknown(error));
+        return;
+      }
     }
     setSaving(true);
     try {
-      await saveAutoMergeSettings(repo.id, {
-        ...settings,
-        requiredChecks: checks,
-      });
-      setSettings({ ...settings, requiredChecks: checks });
-      setChecksDraft(checks.join("\n"));
+      // 仍跟随全局的键发送 null，避免把全局值固化成仓库覆盖。
+      const update = {
+        enabled: followGlobal.enabled ? null : settings.enabled,
+        method: followGlobal.method ? null : settings.method,
+        requiredChecks: followGlobal.requiredChecks ? null : checks,
+      };
+      await saveAutoMergeSettings(repo.id, update);
+      // 清除覆盖后必须重新读取全局有效值，不能继续使用旧的仓库覆盖。
+      let effective: AutoMergeSettings;
+      let refreshed = true;
+      try {
+        effective = applySettings(
+          (await fetchRepositorySettings(repo.id)).items,
+        );
+      } catch {
+        refreshed = false;
+        effective = {
+          enabled: update.enabled ?? settings.enabled,
+          method: update.method ?? settings.method,
+          requiredChecks: update.requiredChecks ?? settings.requiredChecks,
+        };
+        setSettings(effective);
+        setChecksDraft(effective.requiredChecks.join("\n"));
+      }
       setNotice(
-        settings.enabled
-          ? "已开启本仓库自动合并；后续审查通过后会等待检查结果。"
-          : "已关闭本仓库自动合并。",
+        !refreshed
+          ? "已保存；刷新最新配置失败，请稍后重试。"
+          : effective.enabled
+            ? "已保存本仓库自动合并配置；后续审查通过后会等待检查结果。"
+            : "已保存；当前未启用自动合并。",
       );
       await refreshHistory();
     } catch (error) {
@@ -206,7 +261,11 @@ export function AutoMergePanel({
   };
 
   return (
-    <section ref={panel} className="panel" aria-label={`${repo.fullName} 自动合并`}>
+    <section
+      ref={panel}
+      className="panel"
+      aria-label={`${repo.fullName} 自动合并`}
+    >
       <div className="panel-title">
         <h2>检查通过自动合并</h2>
         <div className="actions">
@@ -222,8 +281,9 @@ export function AutoMergePanel({
         </div>
       </div>
       <p className="faint" style={{ fontSize: 12, lineHeight: 1.7 }}>
-        对本仓库明确开启后，平台审查与质量门禁通过、所有 GitHub
-        检查通过时，自动合并已审查的提交。
+        默认跟随「分析设置 → PR
+        审查」的全局开关；在本仓库保存后按本仓库配置覆盖。
+        平台审查与质量门禁通过、所有 GitHub 检查通过时，自动合并已审查的提交。
         检查失败、草稿或分支保护条件未满足时等待；出现新提交后必须重新审查。GitHub
         要求的人工审批仍然有效。
       </p>
@@ -250,31 +310,90 @@ export function AutoMergePanel({
               gap: 14,
             }}
           >
-            <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <input
-                type="checkbox"
-                checked={settings.enabled}
-                onChange={(event) => {
-                  const next = event.target.checked;
-                  // 自动合并会直接写入远端分支，开启和关闭都要求二次确认。
-                  const confirmed = window.confirm(
-                    next
-                      ? `将自动合并所有通过门禁的 PR。确定要为 ${repo.fullName} 开启检查通过自动合并吗？`
-                      : `关闭后，${repo.fullName} 的 PR 不再自动合并。确定要关闭吗？`,
-                  );
-                  if (!confirmed) return;
-                  setSettings({ ...settings, enabled: next });
-                  setNotice(null);
+            <div className="stack" style={{ gap: 6 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.enabled}
+                  disabled={followGlobal.enabled}
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    // 自动合并会直接写入远端分支，开启和关闭都要求二次确认。
+                    const confirmed = window.confirm(
+                      next
+                        ? `将自动合并所有通过门禁的 PR。确定要为 ${repo.fullName} 开启检查通过自动合并吗？`
+                        : `关闭后，${repo.fullName} 的 PR 不再自动合并。确定要关闭吗？`,
+                    );
+                    if (!confirmed) return;
+                    setSettings({ ...settings, enabled: next });
+                    setNotice(null);
+                  }}
+                />
+                在本仓库开启检查通过自动合并
+              </label>
+              <div
+                className="faint"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  fontSize: 12,
+                  flexWrap: "wrap",
                 }}
-              />
-              在本仓库开启检查通过自动合并
-            </label>
+              >
+                <span>
+                  {followGlobal.enabled
+                    ? `跟随全局（当前：${settings.enabled ? "开启" : "关闭"}）`
+                    : "本仓库显式覆盖自动合并开关"}
+                </span>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ padding: "2px 8px", fontSize: 12 }}
+                  onClick={() =>
+                    setFollowGlobal({
+                      ...followGlobal,
+                      enabled: !followGlobal.enabled,
+                    })
+                  }
+                >
+                  {followGlobal.enabled
+                    ? "改为本仓库覆盖自动合并开关"
+                    : "恢复自动合并开关跟随全局"}
+                </button>
+              </div>
+            </div>
             <div className="field">
-              <label htmlFor={`${fieldId}-method`}>合并方式</label>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <label htmlFor={`${fieldId}-method`}>合并方式</label>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ padding: "2px 8px", fontSize: 12 }}
+                  onClick={() =>
+                    setFollowGlobal({
+                      ...followGlobal,
+                      method: !followGlobal.method,
+                    })
+                  }
+                >
+                  {followGlobal.method
+                    ? "改为本仓库覆盖合并方式"
+                    : "恢复合并方式跟随全局"}
+                </button>
+              </div>
               <select
                 className="input"
                 id={`${fieldId}-method`}
                 value={settings.method}
+                disabled={followGlobal.method}
                 onChange={(event) => {
                   setSettings({
                     ...settings,
@@ -289,9 +408,38 @@ export function AutoMergePanel({
                   </option>
                 ))}
               </select>
+              <p className="faint" style={{ fontSize: 12, margin: 0 }}>
+                {followGlobal.method
+                  ? "当前跟随「分析设置 → PR 审查」的全局合并方式"
+                  : "当前使用本仓库的合并方式覆盖"}
+              </p>
             </div>
             <div className="field">
-              <label htmlFor={`${fieldId}-checks`}>必须通过的检查名称</label>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <label htmlFor={`${fieldId}-checks`}>必须通过的检查名称</label>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ padding: "2px 8px", fontSize: 12 }}
+                  onClick={() =>
+                    setFollowGlobal({
+                      ...followGlobal,
+                      requiredChecks: !followGlobal.requiredChecks,
+                    })
+                  }
+                >
+                  {followGlobal.requiredChecks
+                    ? "改为本仓库覆盖检查名单"
+                    : "恢复检查名单跟随全局"}
+                </button>
+              </div>
               <textarea
                 className="input"
                 rows={3}
@@ -299,12 +447,18 @@ export function AutoMergePanel({
                 value={checksDraft}
                 placeholder={"例如：build\ntest"}
                 maxLength={MAX_AUTO_MERGE_CHECKS_TEXT}
+                disabled={followGlobal.requiredChecks}
                 onChange={(event) => {
                   setChecksDraft(event.target.value);
                   setNotice(null);
                 }}
                 aria-describedby={`${fieldId}-checks-help`}
               />
+              <p className="faint" style={{ fontSize: 12, margin: 0 }}>
+                {followGlobal.requiredChecks
+                  ? "当前跟随「分析设置 → PR 审查」的全局检查名单"
+                  : "当前使用本仓库的检查名单覆盖"}
+              </p>
               <p
                 className="faint"
                 id={`${fieldId}-checks-help`}

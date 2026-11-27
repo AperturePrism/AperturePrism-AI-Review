@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseAutoMergeSettings,
   parseRequiredAutoMergeChecks,
+  resolveAutoMergeSettings,
   MAX_AUTO_MERGE_CHECKS,
   MAX_AUTO_MERGE_CHECK_NAME,
 } from "./auto-merge.js";
@@ -22,6 +23,60 @@ describe("repository auto-merge settings", () => {
     expect(
       parseAutoMergeSettings(new Map([["pr_auto_merge_enabled", "true"]])),
     ).toEqual({ enabled: true, method: "squash", requiredChecks: [] });
+  });
+
+  it("按全局默认生效，仓库显式配置逐键覆盖", () => {
+    const globals = new Map([
+      ["pr_auto_merge_enabled", "true"],
+      ["pr_auto_merge_method", "merge"],
+      ["pr_auto_merge_required_checks", '["global-check"]'],
+    ]);
+    expect(resolveAutoMergeSettings(new Map(), globals)).toEqual({
+      enabled: true,
+      method: "merge",
+      requiredChecks: ["global-check"],
+    });
+    expect(
+      resolveAutoMergeSettings(
+        new Map([
+          ["pr_auto_merge_enabled", "false"],
+          ["pr_auto_merge_required_checks", '["repo-check"]'],
+        ]),
+        globals,
+      ),
+    ).toEqual({
+      enabled: false,
+      method: "merge",
+      requiredChecks: ["repo-check"],
+    });
+    expect(
+      resolveAutoMergeSettings(
+        new Map([["pr_auto_merge_method", "rebase"]]),
+        globals,
+      ),
+    ).toEqual({
+      enabled: true,
+      method: "rebase",
+      requiredChecks: ["global-check"],
+    });
+  });
+
+  it("只覆盖检查名单的仓库仍随全局开关关闭而停用", () => {
+    const repoOverrides = new Map([
+      ["pr_auto_merge_required_checks", '["repo-check"]'],
+    ]);
+    expect(
+      resolveAutoMergeSettings(
+        repoOverrides,
+        new Map([["pr_auto_merge_enabled", "true"]]),
+      ),
+    ).toMatchObject({ enabled: true, requiredChecks: ["repo-check"] });
+    expect(
+      resolveAutoMergeSettings(
+        repoOverrides,
+        new Map([["pr_auto_merge_enabled", "false"]]),
+      ),
+    ).toMatchObject({ enabled: false, requiredChecks: ["repo-check"] });
   });
 
   it("preserves exact JSON check names, including commas, and deduplicates", () => {
