@@ -95,6 +95,24 @@ beforeEach(() => {
         );
       const value = JSON.parse(String(init.body)) as AutoMergeSettingsUpdate;
       saved.push(value);
+      // 模拟后端：null 删除覆盖，实值写回仓库覆盖，供保存后的重新读取使用。
+      const fields: [keyof AutoMergeSettingsUpdate, string][] = [
+        ["enabled", "pr_auto_merge_enabled"],
+        ["method", "pr_auto_merge_method"],
+        ["requiredChecks", "pr_auto_merge_required_checks"],
+      ];
+      settingsItems = settingsItems.map((item) => {
+        const field = fields.find(([, key]) => key === item.key)?.[0];
+        if (!field) return item;
+        const next = value[field];
+        return next === null
+          ? { ...item, overridden: false, value: "" }
+          : {
+              ...item,
+              overridden: true,
+              value: typeof next === "string" ? next : JSON.stringify(next),
+            };
+      });
       return json({ status: "ok", settings: value });
     }
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
@@ -163,6 +181,51 @@ describe("检查通过自动合并：页面到真实 API 绑定", () => {
     expect(saved).toEqual([
       { enabled: null, method: null, requiredChecks: ["repo-ci"] },
     ]);
+  });
+
+  it("恢复继承并保存后，面板重新读取并显示全局有效值", async () => {
+    settingsItems = [
+      setting("pr_auto_merge_enabled", "false", true, "true"),
+      setting("pr_auto_merge_method", "merge", true, "squash"),
+      setting(
+        "pr_auto_merge_required_checks",
+        '["repo-ci"]',
+        true,
+        '["global-ci"]',
+      ),
+    ];
+    const user = userEvent.setup();
+    mountPanel();
+    const enabled = await screen.findByRole("checkbox", {
+      name: "在本仓库开启检查通过自动合并",
+    });
+    expect(enabled).not.toBeChecked();
+    await user.click(
+      screen.getByRole("button", { name: "恢复自动合并开关跟随全局" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "恢复合并方式跟随全局" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "恢复检查名单跟随全局" }),
+    );
+    await user.click(screen.getByRole("button", { name: "保存自动合并配置" }));
+    await waitFor(() => expect(enabled).toBeChecked());
+    expect(enabled).toBeDisabled();
+    const method = screen.getByRole("combobox", { name: "合并方式" });
+    expect(method).toHaveValue("squash");
+    expect(method).toBeDisabled();
+    const checks = screen.getByRole("textbox", {
+      name: "必须通过的检查名称",
+    });
+    expect(checks).toHaveValue("global-ci");
+    expect(checks).toBeDisabled();
+    expect(saved).toEqual([
+      { enabled: null, method: null, requiredChecks: null },
+    ]);
+    expect(
+      await screen.findByText(/已保存本仓库自动合并配置/),
+    ).toBeInTheDocument();
   });
 
   it("一次原子保存开关、合并方式与准确检查名，保留名称中的逗号", async () => {

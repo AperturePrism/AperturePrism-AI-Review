@@ -150,6 +150,14 @@ export function AutoMergePanel({
     panel.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
   }, [repo.id]);
 
+  const applySettings = useCallback((items: RepositorySettingItem[]) => {
+    const next = settingsFromItems(items);
+    setSettings(next);
+    setFollowGlobal(followGlobalFromItems(items));
+    setChecksDraft(next.requiredChecks.join("\n"));
+    return next;
+  }, []);
+
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -163,10 +171,7 @@ export function AutoMergePanel({
       fetchRepositorySettings(repo.id)
         .then((value) => {
           if (!active) return;
-          const next = settingsFromItems(value.items);
-          setSettings(next);
-          setFollowGlobal(followGlobalFromItems(value.items));
-          setChecksDraft(next.requiredChecks.join("\n"));
+          applySettings(value.items);
         })
         .catch((error: unknown) => {
           if (active) setSettingsError(explainUnknown(error));
@@ -185,7 +190,7 @@ export function AutoMergePanel({
     return () => {
       active = false;
     };
-  }, [repo.id]);
+  }, [repo.id, applySettings]);
 
   const refreshHistory = useCallback(async () => {
     setRefreshing(true);
@@ -223,17 +228,29 @@ export function AutoMergePanel({
         requiredChecks: followGlobal.requiredChecks ? null : checks,
       };
       await saveAutoMergeSettings(repo.id, update);
-      const effective: AutoMergeSettings = {
-        enabled: update.enabled ?? settings.enabled,
-        method: update.method ?? settings.method,
-        requiredChecks: update.requiredChecks ?? settings.requiredChecks,
-      };
-      setSettings(effective);
-      setChecksDraft(effective.requiredChecks.join("\n"));
+      // 清除覆盖后必须重新读取全局有效值，不能继续使用旧的仓库覆盖。
+      let effective: AutoMergeSettings;
+      let refreshed = true;
+      try {
+        effective = applySettings(
+          (await fetchRepositorySettings(repo.id)).items,
+        );
+      } catch {
+        refreshed = false;
+        effective = {
+          enabled: update.enabled ?? settings.enabled,
+          method: update.method ?? settings.method,
+          requiredChecks: update.requiredChecks ?? settings.requiredChecks,
+        };
+        setSettings(effective);
+        setChecksDraft(effective.requiredChecks.join("\n"));
+      }
       setNotice(
-        effective.enabled
-          ? "已保存本仓库自动合并配置；后续审查通过后会等待检查结果。"
-          : "已保存；当前未启用自动合并。",
+        !refreshed
+          ? "已保存；刷新最新配置失败，请稍后重试。"
+          : effective.enabled
+            ? "已保存本仓库自动合并配置；后续审查通过后会等待检查结果。"
+            : "已保存；当前未启用自动合并。",
       );
       await refreshHistory();
     } catch (error) {
