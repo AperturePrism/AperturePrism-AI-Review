@@ -61,6 +61,24 @@ describe("repository auto-merge settings", () => {
     });
   });
 
+  it("只覆盖检查名单的仓库仍随全局开关关闭而停用", () => {
+    const repoOverrides = new Map([
+      ["pr_auto_merge_required_checks", '["repo-check"]'],
+    ]);
+    expect(
+      resolveAutoMergeSettings(
+        repoOverrides,
+        new Map([["pr_auto_merge_enabled", "true"]]),
+      ),
+    ).toMatchObject({ enabled: true, requiredChecks: ["repo-check"] });
+    expect(
+      resolveAutoMergeSettings(
+        repoOverrides,
+        new Map([["pr_auto_merge_enabled", "false"]]),
+      ),
+    ).toMatchObject({ enabled: false, requiredChecks: ["repo-check"] });
+  });
+
   it("preserves exact JSON check names, including commas, and deduplicates", () => {
     const requiredChecks = JSON.stringify([
       "  build (Linux, Node 22)  ",

@@ -5,7 +5,10 @@ import { AutoMergePanel } from "../components/AutoMergePanel";
 import { ToastProvider } from "../components/Toast";
 import { ReposPage } from "../pages/ReposPage";
 import { bumpCache } from "../lib/api/http";
-import type { AutoMergeItem, AutoMergeSettings } from "../lib/api/auto-merge";
+import type {
+  AutoMergeItem,
+  AutoMergeSettingsUpdate,
+} from "../lib/api/auto-merge";
 import type { Repository, RepositorySettingItem } from "../lib/api/repository";
 
 const repo: Repository = {
@@ -23,7 +26,7 @@ let historyFailure: boolean;
 let saveFailure: boolean;
 let settingsItems: RepositorySettingItem[];
 let historyItems: AutoMergeItem[];
-let saved: AutoMergeSettings[];
+let saved: AutoMergeSettingsUpdate[];
 
 function setting(
   key: string,
@@ -90,7 +93,7 @@ beforeEach(() => {
           },
           403,
         );
-      const value = JSON.parse(String(init.body)) as AutoMergeSettings;
+      const value = JSON.parse(String(init.body)) as AutoMergeSettingsUpdate;
       saved.push(value);
       return json({ status: "ok", settings: value });
     }
@@ -131,6 +134,37 @@ describe("检查通过自动合并：页面到真实 API 绑定", () => {
     expect(saved).toEqual([]);
   });
 
+  it("只覆盖检查名单时，保存不会固化仍继承的全局开关和合并方式", async () => {
+    settingsItems = [
+      setting("pr_auto_merge_enabled", "", false, "true"),
+      setting("pr_auto_merge_method", "", false, "merge"),
+      setting("pr_auto_merge_required_checks", "", false, '["global-ci"]'),
+    ];
+    const user = userEvent.setup();
+    mountPanel();
+    const enabled = await screen.findByRole("checkbox", {
+      name: "在本仓库开启检查通过自动合并",
+    });
+    expect(enabled).toBeChecked();
+    expect(enabled).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "合并方式" })).toBeDisabled();
+    const checks = screen.getByRole("textbox", {
+      name: "必须通过的检查名称",
+    });
+    expect(checks).toBeDisabled();
+    await user.click(
+      screen.getByRole("button", { name: "改为本仓库覆盖检查名单" }),
+    );
+    expect(checks).toBeEnabled();
+    await user.clear(checks);
+    await user.type(checks, "repo-ci");
+    await user.click(screen.getByRole("button", { name: "保存自动合并配置" }));
+    await screen.findByRole("status");
+    expect(saved).toEqual([
+      { enabled: null, method: null, requiredChecks: ["repo-ci"] },
+    ]);
+  });
+
   it("一次原子保存开关、合并方式与准确检查名，保留名称中的逗号", async () => {
     const user = userEvent.setup();
     mountPanel();
@@ -165,7 +199,9 @@ describe("检查通过自动合并：页面到真实 API 绑定", () => {
     expect(
       screen.getByRole("textbox", { name: "必须通过的检查名称" }),
     ).toHaveValue("build\nCI (node, linux)");
-    expect(await screen.findByText(/已开启本仓库自动合并/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/已保存本仓库自动合并配置/),
+    ).toBeInTheDocument();
   });
 
   it("读取 JSON 数组配置时不会把含逗号的检查名称拆开", async () => {
@@ -290,7 +326,9 @@ describe("检查通过自动合并：页面到真实 API 绑定", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "需要本仓库管理权限",
     );
-    expect(screen.queryByText(/已开启本仓库自动合并/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/已保存本仓库自动合并配置/),
+    ).not.toBeInTheDocument();
     expect(saved).toEqual([]);
   });
 

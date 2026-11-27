@@ -23,13 +23,14 @@ import {
 } from "../utils/http.js";
 import type { HttpRoute } from "../utils/routes.js";
 
+/** null 表示删除该键的仓库覆盖，回到跟随全局默认。 */
 export type AutoMergeSettingsInput = {
-  enabled: boolean;
-  method: PullRequestMergeMethod;
-  requiredChecks: string[];
+  enabled: boolean | null;
+  method: PullRequestMergeMethod | null;
+  requiredChecks: string[] | null;
 };
 
-/** 专用接口不接受部分配置，避免合并策略和检查条件分次生效。 */
+/** 一次请求原子提交三个键；未改动的键传 null，不会被固化成仓库覆盖。 */
 export function parseAutoMergeSettingsInput(
   input: Record<string, unknown>,
 ): AutoMergeSettingsInput {
@@ -38,36 +39,42 @@ export function parseAutoMergeSettingsInput(
     Object.keys(input).some(
       (key) => !["enabled", "method", "requiredChecks"].includes(key),
     ) ||
-    typeof input.enabled !== "boolean" ||
-    typeof input.method !== "string" ||
-    !["merge", "squash", "rebase"].includes(input.method) ||
-    !Array.isArray(input.requiredChecks) ||
-    input.requiredChecks.length > MAX_AUTO_MERGE_CHECKS
+    (input.enabled !== null && typeof input.enabled !== "boolean") ||
+    (input.method !== null &&
+      (typeof input.method !== "string" ||
+        !["merge", "squash", "rebase"].includes(input.method))) ||
+    (input.requiredChecks !== null &&
+      (!Array.isArray(input.requiredChecks) ||
+        input.requiredChecks.length > MAX_AUTO_MERGE_CHECKS))
   ) {
     throw new HttpError(
       400,
-      "enabled, method and requiredChecks are required; additional fields are not allowed",
+      "enabled, method and requiredChecks are required and must be valid values or null; additional fields are not allowed",
     );
   }
-  const requiredChecks: string[] = [];
-  for (const value of input.requiredChecks) {
-    if (
-      typeof value !== "string" ||
-      /\p{Cc}/u.test(value) ||
-      !value.trim() ||
-      value.trim().length > MAX_AUTO_MERGE_CHECK_NAME
-    ) {
-      throw new HttpError(
-        400,
-        `requiredChecks names must contain 1-${MAX_AUTO_MERGE_CHECK_NAME} characters without control characters`,
-      );
+  let requiredChecks: string[] | null = null;
+  if (input.requiredChecks !== null) {
+    requiredChecks = [];
+    for (const value of input.requiredChecks) {
+      if (
+        typeof value !== "string" ||
+        /\p{Cc}/u.test(value) ||
+        !value.trim() ||
+        value.trim().length > MAX_AUTO_MERGE_CHECK_NAME
+      ) {
+        throw new HttpError(
+          400,
+          `requiredChecks names must contain 1-${MAX_AUTO_MERGE_CHECK_NAME} characters without control characters`,
+        );
+      }
+      requiredChecks.push(value.trim());
     }
-    requiredChecks.push(value.trim());
+    requiredChecks = [...new Set(requiredChecks)];
   }
   return {
-    enabled: input.enabled,
-    method: input.method as PullRequestMergeMethod,
-    requiredChecks: [...new Set(requiredChecks)],
+    enabled: input.enabled as boolean | null,
+    method: input.method as PullRequestMergeMethod | null,
+    requiredChecks,
   };
 }
 
@@ -136,7 +143,7 @@ export async function handleRepositoryAutoMerges(
   json(response, 200, { items, canManage: manages && !readOnly }, requestId);
 }
 
-/** 与 worker 的 repository → task → request 锁序一致；禁用和取消不可分割。 */
+/** 与 worker 的 repository → task → request 锁序一致；逐键覆盖/清除与禁用取消原子提交。 */
 export async function handleRepositoryAutoMergeSettings(
   request: IncomingMessage,
   response: ServerResponse,
@@ -169,26 +176,41 @@ export async function handleRepositoryAutoMergeSettings(
       .for("update")
       .limit(1);
     if (!repo) throw new HttpError(404, "repository_not_found");
-    const values = [
-      String(settings.enabled),
+    const values: (string | null)[] = [
+      settings.enabled === null ? null : String(settings.enabled),
       settings.method,
-      JSON.stringify(settings.requiredChecks),
+      settings.requiredChecks === null
+        ? null
+        : JSON.stringify(settings.requiredChecks),
     ];
-    await tx
-      .insert(repositorySettings)
-      .values(
-        AUTO_MERGE_SETTING_KEYS.map((key, index) => ({
-          repositoryId,
-          key,
-          value: values[index]!,
-          updatedAt: now,
-        })),
-      )
-      .onConflictDoUpdate({
-        target: [repositorySettings.repositoryId, repositorySettings.key],
-        set: { value: sql`excluded.value`, updatedAt: now },
-      });
-    if (!settings.enabled) {
+    // null 键删除仓库覆盖，逐键回到全局默认；其余键原子写入。
+    const cleared = AUTO_MERGE_SETTING_KEYS.filter(
+      (_key, index) => values[index] === null,
+    );
+    const upserts = AUTO_MERGE_SETTING_KEYS.flatMap((key, index) => {
+      const value = values[index];
+      return value === null || value === undefined
+        ? []
+        : [{ repositoryId, key, value, updatedAt: now }];
+    });
+    if (cleared.length)
+      await tx
+        .delete(repositorySettings)
+        .where(
+          and(
+            eq(repositorySettings.repositoryId, repositoryId),
+            inArray(repositorySettings.key, cleared),
+          ),
+        );
+    if (upserts.length)
+      await tx
+        .insert(repositorySettings)
+        .values(upserts)
+        .onConflictDoUpdate({
+          target: [repositorySettings.repositoryId, repositorySettings.key],
+          set: { value: sql`excluded.value`, updatedAt: now },
+        });
+    if (settings.enabled === false) {
       await tx
         .update(pullRequestAutoMerges)
         .set({

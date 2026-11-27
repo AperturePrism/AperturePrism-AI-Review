@@ -34,11 +34,17 @@
 
 ## 接口与代码位置
 
-`GET /repositories/:id/auto-merge?limit=20` 读取历史及 `canManage`；`PUT /repositories/:id/auto-merge/settings` 原子保存三个选项：
+`GET /repositories/:id/auto-merge?limit=20` 读取历史及 `canManage`；`PUT /repositories/:id/auto-merge/settings` 原子保存三个选项，值为 `null` 表示删除该键的仓库覆盖、回到跟随全局：
 
 ```json
 {"enabled":true,"method":"squash","requiredChecks":["build","test"]}
 ```
+
+```json
+{"enabled":null,"method":null,"requiredChecks":["build","test"]}
+```
+
+第二个例子只覆盖检查名单，开关和合并方式仍跟随全局。仓库面板逐键提供「改为本仓库覆盖 / 恢复跟随全局」，保存时只提交被覆盖的键，不会把当前全局值固化成仓库配置。
 
 全局默认保存在 `system_settings`，仓库覆盖保存在 `repository_settings`，键名都是 `pr_auto_merge_enabled`、`pr_auto_merge_method`、`pr_auto_merge_required_checks`；每个键独立按「仓库有值则仓库、否则全局」解析。检查名称以 JSON 数组保存，可以包含逗号；读取也兼容手写逗号或换行列表。泛用单键设置接口不接受这三个仓库级键，避免保存一半配置就执行。
 

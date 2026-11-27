@@ -40,7 +40,13 @@ const OTHER = "00000000-0000-0000-0000-000000000002";
 const NOW = new Date("2026-11-13T00:00:00Z");
 const dialect = new PgDialect();
 type Row = Record<string, unknown>;
-type Write = { table: string; values: Row[]; target?: unknown; set?: Row };
+type Write = {
+  table: string;
+  values: Row[];
+  target?: unknown;
+  set?: Row;
+  clearedKeys?: unknown[];
+};
 let state: {
   events: string[];
   selections: {
@@ -114,7 +120,7 @@ function makeDb(inTransaction = false) {
     },
     insert(table: Table) {
       expect(inTransaction).toBe(true);
-      expect(state.events.at(-1)).toBe("repository:locked");
+      expect(state.events).toContain("repository:locked");
       const write: Write = { table: getTableName(table), values: [] };
       return {
         values(values: Row[]) {
@@ -123,9 +129,39 @@ function makeDb(inTransaction = false) {
             async onConflictDoUpdate(conflict: { target: unknown; set: Row }) {
               state.events.push("settings:upsert");
               state.writes.push({ ...write, ...conflict });
-              state.settings = values;
+              state.settings = [
+                ...state.settings.filter(
+                  (row) => !values.some((value) => value.key === row.key),
+                ),
+                ...values,
+              ];
             },
           };
+        },
+      };
+    },
+    delete(table: Table) {
+      expect(inTransaction).toBe(true);
+      expect(getTableName(table)).toBe("repository_settings");
+      return {
+        async where(predicate: SQL) {
+          const query = dialect.sqlToQuery(predicate);
+          expect(query.sql).toContain('"repository_id" =');
+          expect(query.sql).toContain('"key" in');
+          state.events.push("settings:delete");
+          const [repositoryId, ...keys] = query.params;
+          state.settings = state.settings.filter(
+            (row) =>
+              !(
+                row.repositoryId === repositoryId &&
+                keys.includes(row.key as string)
+              ),
+          );
+          state.writes.push({
+            table: "repository_settings",
+            values: [],
+            clearedKeys: keys,
+          });
         },
       };
     },
@@ -380,6 +416,83 @@ describe("auto-merge atomic settings HTTP", () => {
       result.body.settings,
     );
   });
+  it("逐键清除仓库覆盖，不把继承的全局值固化成仓库覆盖", async () => {
+    state.settings = [
+      { repositoryId: REPO, key: "pr_auto_merge_enabled", value: "true" },
+      { repositoryId: REPO, key: "pr_auto_merge_method", value: "merge" },
+      {
+        repositoryId: REPO,
+        key: "pr_auto_merge_required_checks",
+        value: '["old"]',
+      },
+      { repositoryId: OTHER, key: "pr_auto_merge_enabled", value: "true" },
+    ];
+    const result = await http(settingsPath, "PUT", {
+      enabled: null,
+      method: null,
+      requiredChecks: ["repo-ci"],
+    });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({
+      status: "ok",
+      settings: {
+        enabled: null,
+        method: null,
+        requiredChecks: ["repo-ci"],
+      },
+    });
+    expect(state.events).toEqual([
+      "begin",
+      "repository:locked",
+      "settings:delete",
+      "settings:upsert",
+      "commit",
+    ]);
+    expect(
+      state.settings.map(({ repositoryId, key, value }) => ({
+        repositoryId,
+        key,
+        value,
+      })),
+    ).toEqual([
+      { repositoryId: OTHER, key: "pr_auto_merge_enabled", value: "true" },
+      {
+        repositoryId: REPO,
+        key: "pr_auto_merge_required_checks",
+        value: '["repo-ci"]',
+      },
+    ]);
+    expect(seam.audit).toHaveBeenCalledWith(
+      expect.anything(),
+      "repository_auto_merge.update",
+      "owner/repo",
+      result.body.settings,
+    );
+  });
+  it("清除全部覆盖时不写入仓库设置，也不取消其他仓库的任务", async () => {
+    state.settings = [
+      { repositoryId: REPO, key: "pr_auto_merge_enabled", value: "true" },
+    ];
+    const result = await http(settingsPath, "PUT", {
+      enabled: null,
+      method: null,
+      requiredChecks: null,
+    });
+    expect(result.status).toBe(200);
+    expect(state.events).toEqual([
+      "begin",
+      "repository:locked",
+      "settings:delete",
+      "commit",
+    ]);
+    expect(state.writes).toHaveLength(1);
+    expect(state.writes[0]?.clearedKeys).toEqual([
+      "pr_auto_merge_enabled",
+      "pr_auto_merge_method",
+      "pr_auto_merge_required_checks",
+    ]);
+    expect(state.settings).toEqual([]);
+  });
   it("atomically disables and cancels only this repository's outstanding intentions", async () => {
     state.queue = ["pending", "waiting", "blocked", "merged", "canceled"]
       .map((status) => queueRow(status, REPO, status))
@@ -448,7 +561,7 @@ describe("auto-merge atomic settings HTTP", () => {
     { ...valid, extra: true },
     { ...valid, enabled: "true" },
     { ...valid, method: "automatic" },
-    { ...valid, method: null },
+    { ...valid, method: "" },
     { ...valid, method: { toString: "merge" } },
     { ...valid, requiredChecks: "ci" },
     { ...valid, requiredChecks: [42] },
