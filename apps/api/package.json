@@ -1,13 +1,13 @@
 {
   "name": "@apertureprism/api",
   "private": true,
-  "version": "1.3.0-beta.8",
+  "version": "1.3.0-beta.9",
   "type": "module",
   "dependencies": {
-    "@apertureprism/config": "1.3.0-beta.8",
-    "@apertureprism/database": "1.3.0-beta.8",
-    "@apertureprism/github-adapter": "1.3.0-beta.8",
-    "@apertureprism/observability": "1.3.0-beta.8"
+    "@apertureprism/config": "1.3.0-beta.9",
+    "@apertureprism/database": "1.3.0-beta.9",
+    "@apertureprism/github-adapter": "1.3.0-beta.9",
+    "@apertureprism/observability": "1.3.0-beta.9"
   },
   "scripts": {
     "build": "tsc",
