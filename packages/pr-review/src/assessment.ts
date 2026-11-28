@@ -121,9 +121,8 @@ export function assessReview(
           ? "disabled_rule"
           : finding.confidence < policy.minimumConfidence
             ? "low_confidence"
-            : finding.rule !== "meaningless-change" &&
-                severityRank(finding.severity) <
-                  severityRank(policy.minimumSeverity)
+            : severityRank(finding.severity) <
+                severityRank(policy.minimumSeverity)
               ? "low_severity"
               : policy.requireEvidence && !check.verified
                 ? "unverified_evidence"

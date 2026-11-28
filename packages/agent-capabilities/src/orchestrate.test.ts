@@ -120,21 +120,12 @@ function meaninglessChangeReview(severity: "low" | "info"): PrReviewContract {
   };
 }
 
-function expectMeaninglessChangePolicy(request: ModelInvocationRequest): void {
+function expectScopePolicy(request: ModelInvocationRequest): void {
   const system = request.messages[0]?.content ?? "";
-  expect(system).toContain("无价值修改识别（issue #105）");
-  expect(system).toContain("只有 diff 及已提供上下文能证明");
-  expect(system).toContain("缺少预期功能或可维护性价值");
-  expect(system).toContain("误提交的调试输出");
-  expect(system).toContain("有明确用途的日志");
-  expect(system).toContain("证据必须逐字摘自 diff");
-  expect(system).toContain("正常重构");
-  expect(system).toContain("安全修复");
-  expect(system).toContain("格式化规范");
-  expect(system).toContain("低置信的风格意见仍然不发");
-  expect(system).toContain("rule 必须为 meaningless-change");
-  expect(system).toContain("severity 必须为 low 或 info");
-  expect(system).toContain("置信度门槛仍由校验器执行");
+  expect(system).toContain("审查范围（issue #170）");
+  expect(system).toContain("不要把「代码是否符合仓库审核规则」");
+  expect(system).toContain("不要报告无价值修改");
+  expect(system).not.toContain("无价值修改识别（issue #105）");
 }
 
 /**
@@ -281,7 +272,7 @@ describe("runExpertReview", () => {
   });
 
   it.each(["low", "info"] as const)(
-    "preserves evidenced %s meaningless changes through expert prompts and the final parser",
+    "drops %s meaningless changes from the expert path",
     async (severity) => {
       const review = meaninglessChangeReview(severity);
       const leadJson = JSON.stringify(review);
@@ -297,42 +288,25 @@ describe("runExpertReview", () => {
       expect(outcome.outcome).toBe("valid");
       if (outcome.outcome !== "valid") return;
       expect(outcome.experts).toBe(4);
-      expect(outcome.review).toEqual(review);
+      expect(outcome.review).toEqual({ ...review, findings: [] });
       expect(outcome.review.contractVersion).toBe("pr-review/v1");
-      expect(parsePrReviewJson(leadJson)).toEqual({ outcome: "valid", review });
+      expect(parsePrReviewJson(leadJson)).toEqual({
+        outcome: "valid",
+        review: { ...review, findings: [] },
+      });
       expect(adapter.requests).toHaveLength(5);
       for (const request of adapter.requests) {
-        expectMeaninglessChangePolicy(request);
+        expectScopePolicy(request);
         expect(request.messages.at(-1)?.content).toContain(
           meaninglessChangeInput.rendered,
         );
         expect(request.responseFormat).toBe("json");
       }
-      const expertRequests = adapter.requests.filter(
-        (request) =>
-          !request.messages[0]?.content.includes("主编（lead reviewer）"),
-      );
-      expect(expertRequests).toHaveLength(4);
-      for (const request of expertRequests) {
-        expect(request.messages[0]?.content).toContain(
-          "这类发现用 severity: suggestion",
-        );
-      }
-      const leadRequest = adapter.requests.at(-1);
-      expect(leadRequest?.messages[0]?.content).toContain(
-        "不要把所有 suggestion 都映射为 meaningless-change",
-      );
-      expect(leadRequest?.messages.at(-1)?.content).toContain(
-        "[suggestion] src/a.ts:2 meaningless-change",
-      );
-      expect(leadRequest?.messages.at(-1)?.content).toContain(
-        "+  const unusedAnswer = 42;",
-      );
     },
   );
 
   it.each(["low", "info"] as const)(
-    "keeps %s meaningless-change policy in all specialist and lead repair prompts",
+    "keeps %s scope policy in all specialist and lead repair prompts",
     async (severity) => {
       const review = meaninglessChangeReview(severity);
       const adapter = adaptiveAdapter({
@@ -349,10 +323,10 @@ describe("runExpertReview", () => {
       expect(outcome.outcome).toBe("valid");
       if (outcome.outcome !== "valid") return;
       expect(outcome.experts).toBe(4);
-      expect(outcome.review).toEqual(review);
+      expect(outcome.review).toEqual({ ...review, findings: [] });
       expect(adapter.requests).toHaveLength(10);
       for (const request of adapter.requests) {
-        expectMeaninglessChangePolicy(request);
+        expectScopePolicy(request);
       }
       const repairRequests = adapter.requests.filter((request) =>
         request.messages
@@ -368,7 +342,7 @@ describe("runExpertReview", () => {
     },
   );
 
-  it("does not bypass confidence or ordinary low/info filtering in the expert path", async () => {
+  it("drops meaningless changes and low-confidence findings in the expert path", async () => {
     const retained = meaninglessChangeFinding("info");
     const review: PrReviewContract = {
       ...meaninglessChangeReview("info"),
@@ -390,6 +364,7 @@ describe("runExpertReview", () => {
         },
         { ...retained, rule: "comment-style", confidence: 0.99 },
         { ...retained, rule: "meaningless-change-style", confidence: 0.99 },
+        { ...retained, severity: "medium", confidence: 0.99 },
       ],
     };
     const leadJson = JSON.stringify(review);
@@ -404,10 +379,10 @@ describe("runExpertReview", () => {
 
     expect(outcome.outcome).toBe("valid");
     if (outcome.outcome !== "valid") return;
-    expect(outcome.review).toEqual({ ...review, findings: [retained] });
+    expect(outcome.review).toEqual({ ...review, findings: [] });
     expect(parsePrReviewJson(leadJson)).toEqual({
       outcome: "valid",
-      review: outcome.review,
+      review: { ...review, findings: [] },
     });
     expect(adapter.calls()).toBe(5);
   });

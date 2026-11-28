@@ -60,22 +60,12 @@ describe("shouldPublishFinding", () => {
     ).toBe(false);
   });
 
-  it.each(["low", "info"] as const)(
-    "publishes %s meaningless changes without lowering the confidence threshold",
+  it.each(["low", "info", "medium", "high"] as const)(
+    "never publishes %s meaningless changes",
     (severity) => {
       expect(
         shouldPublishFinding(
-          finding({ rule: "meaningless-change", severity, confidence: 0.9 }),
-        ),
-      ).toBe(true);
-      expect(
-        shouldPublishFinding(
-          finding({ rule: "meaningless-change", severity, confidence: 0.5 }),
-        ),
-      ).toBe(true);
-      expect(
-        shouldPublishFinding(
-          finding({ rule: "meaningless-change", severity, confidence: 0.49 }),
+          finding({ rule: "meaningless-change", severity, confidence: 1 }),
         ),
       ).toBe(false);
     },

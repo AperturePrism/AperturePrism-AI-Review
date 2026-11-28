@@ -21,7 +21,7 @@ const context = renderDiffForModel(
 );
 
 it.each(["low", "info"] as const)(
-  "keeps %s meaningless changes from the default reviewer through rendering",
+  "drops %s meaningless changes from the default reviewer",
   async (severity) => {
     const finding: Finding = {
       rule: "meaningless-change",
@@ -64,16 +64,14 @@ it.each(["low", "info"] as const)(
     );
 
     expect(invoke).toHaveBeenCalledOnce();
-    expect(invoke.mock.calls[0]![1].messages[0]!.content).toContain(
+    expect(invoke.mock.calls[0]![1].messages[0]!.content).not.toContain(
       "meaningless-change",
     );
     expect(outcome.outcome).toBe("valid");
     if (outcome.outcome !== "valid") return;
-    expect(outcome.review.findings).toEqual([finding]);
-    expect(renderReviewBody(outcome.review)).toContain(finding.message);
-    expect(renderInlineComments(outcome.review)).toEqual([
-      expect.objectContaining({ path: finding.file, line: 2 }),
-    ]);
+    expect(outcome.review.findings).toEqual([]);
+    expect(renderReviewBody(outcome.review)).not.toContain(finding.message);
+    expect(renderInlineComments(outcome.review)).toEqual([]);
   },
 );
 

@@ -77,10 +77,9 @@ export function parseExpertJson(text: string): ExpertJsonValidation {
 
 /* ---------- prompts ---------- */
 
-const MEANINGLESS_CHANGE_POLICY = `无价值修改识别（issue #105）：
-- 只有 diff 及已提供上下文能证明修改缺少预期功能或可维护性价值时，才明确报告无价值修改；例如可证实误提交的调试输出、无用临时代码或冗余改动，不要求完全没有可观察行为变化。证据必须逐字摘自 diff，并说明判断依据及删除或恢复建议。
-- 不要把正常重构、可读性或可维护性改进、安全修复、有明确用途的日志、遵循格式化规范的纯格式修改当成无价值修改；不熟悉代码、与功能无关或仅改变格式都不足以证明无价值，证据不足则不报。
-- 确凿的无价值修改不受“只保留高价值意见”限制；低置信的风格意见仍然不发。最终 finding 的 rule 必须为 meaningless-change，severity 必须为 low 或 info；如实评估 confidence，置信度门槛仍由校验器执行，不得为通过发布门槛抬高严重度或置信度。`;
+const SCOPE_POLICY = `审查范围（issue #170）：
+- findings 只报告源码中真实存在、可验证的缺陷；不要把「代码是否符合仓库审核规则」或审核规则文件本身的问题（缺失、过时、写法）作为发现，仓库审核规则只用于理解项目约定。
+- 不要报告无价值修改：格式扰动、被注释掉的代码、误提交的调试输出或临时代码、无意义重命名、样板堆砌等一律不输出。`;
 
 const EXPERT_CONTRACT = `输出必须严格符合以下契约（JSON 对象，不要输出任何解释、Markdown 代码块或额外文字）：
 {
@@ -101,8 +100,7 @@ const EXPERT_CONTRACT = `输出必须严格符合以下契约（JSON 对象，�
 - 如果该专业视角没有发现问题，findings 可为空数组。
 - 你只输出你的独立判断，不要替其他专家做决定。
 
-${MEANINGLESS_CHANGE_POLICY}
-- 专家中间契约保持不变：这类发现用 severity: suggestion，在 message 中标明 meaningless-change，why 说明缺少预期功能或维护价值的依据，evidence 提供逐字摘录；由主编映射为最终 low/info finding。`;
+${SCOPE_POLICY}`;
 
 const LEAD_CONTRACT = `输出必须严格符合以下契约（JSON 对象，不要输出任何解释、Markdown 代码块或额外文字）：
 {
@@ -132,8 +130,7 @@ const LEAD_CONTRACT = `输出必须严格符合以下契约（JSON 对象，不�
 - findings 最多 50 条；如果整体没有问题，给出 approve，findings 可为空数组。
 - overallTone 依据最严重的问题决定：approve | changes_requested | comment。
 
-${MEANINGLESS_CHANGE_POLICY}
-- 合并专家的 meaningless-change suggestion 时，按上述规则核实并保留为最终 low/info finding，不要当作普通风格意见丢弃；不要把所有 suggestion 都映射为 meaningless-change。`;
+${SCOPE_POLICY}`;
 
 function buildExpertSystemPrompt(expert: Expert, skillsText: string): string {
   const lines: string[] = [expert.rolePrompt, ""];

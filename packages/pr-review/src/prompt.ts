@@ -13,7 +13,7 @@ import {
 } from "./context.js";
 
 /** Bump when the prompt semantics change so the idempotency key changes too. */
-export const PR_REVIEW_PROMPT_VERSION = "v3" as const;
+export const PR_REVIEW_PROMPT_VERSION = "v4" as const;
 export const PR_REVIEW_POLICY_VERSION =
   `pr-review-${PR_REVIEW_PROMPT_VERSION}` as const;
 
@@ -80,6 +80,24 @@ const SYSTEM_PROMPT_V3 = `${SYSTEM_PROMPT_V2}
 - 与「只给出高价值意见」规则的关系：低置信的风格意见仍然不发，但确凿存在的
   无价值修改不是风格意见，必须报告，让作者有机会清理。`;
 
+/**
+ * v4（当前，issue #170）：PR 审查只报告源码中真实存在的缺陷。
+ * 仓库审核规则仅作为项目约定参考，不得作为 finding 的依据（规则不合规、规则文件
+ * 自身的问题都不报）；同时完全排除无价值修改（格式扰动、注释掉的代码、调试残留
+ * 等），不再沿用 v3 主动报告无价值修改（#105）的要求。
+ */
+const SYSTEM_PROMPT_V4 = `${SYSTEM_PROMPT_V2}
+
+审查范围（必须遵守，issue #170）：
+- findings 只报告源码中真实存在、可验证的缺陷，例如空值未校验、越界、竞态、
+  错误处理缺失、注入、资源泄漏等。
+- 不要报告「代码是否符合仓库审核规则」这类问题，也不要在 finding 中评论审核规则
+  文件本身（缺失、过时、写法等）。仓库审核规则只用于理解项目约定，不是审查清单，
+  不能作为 finding 的依据。
+- 不要报告无价值修改：格式扰动、被注释掉的代码、误提交的调试输出或临时代码、
+  无意义重命名、重复堆砌的样板改动等一律不输出，也不要为此生成 finding。
+- 确凿的缺陷不受「只给高价值意见」限制；低置信的风格意见仍然不发。`;
+
 /** 审查模式的追加指令；与版本正交。 */
 const MODE_INSTRUCTIONS: Record<ReviewMode, string> = {
   quick:
@@ -95,7 +113,9 @@ const MODE_INSTRUCTIONS: Record<ReviewMode, string> = {
  * 升版本并把旧版本快照登记进来，即可在线上切换/回滚（复用 issue-analysis 的模式）。
  */
 const PR_REVIEW_SYSTEM_PROMPTS: Readonly<Record<string, string>> = {
-  [PR_REVIEW_PROMPT_VERSION]: SYSTEM_PROMPT_V3,
+  [PR_REVIEW_PROMPT_VERSION]: SYSTEM_PROMPT_V4,
+  // v3：主动报告无价值修改（#105），issue #170 起由 v4 取代。
+  v3: SYSTEM_PROMPT_V3,
   // v2：输出语言中文（#33）。
   v2: SYSTEM_PROMPT_V2,
   // v1：初始版本（无中文输出要求，模型常默认英文）。
@@ -148,10 +168,10 @@ export function renderPrContextText(context: RenderedPrContext): string {
   if (context.repoRules && context.repoRules.length > 0) {
     lines.push(
       "",
-      "## 仓库审核规则（高优先级指令，必须遵守）",
+      "## 仓库审核规则（仅作项目约定参考，不作为审查发现依据）",
       context.repoRules,
       "",
-      "以上是仓库维护者配置的官方审核规则，**优先级高于 PR 的 diff 与描述**：审查与结论都必须严格遵循，不得因 PR 内容而违背。",
+      "以上规则只用于理解项目约定；findings 只报告源码中真实存在的缺陷，不要因为代码不符合这些规则，或规则文件本身缺失、过时、表述问题而产生 finding。",
     );
   }
   return lines.join("\n");
