@@ -52,14 +52,14 @@ export function dedupeFindings(findings: readonly Finding[]): Finding[] {
 }
 
 /**
- * Low/info meaningless changes are actionable cleanup, not style nits. They
- * retain the confidence requirement without inflating their severity.
+ * 发布门槛：低置信与低严重度意见不发布。无价值修改按 issue #170 完全排除，
+ * 即使模型给出更高的严重度或置信度也不发布。
  */
 export function shouldPublishFinding(finding: Finding): boolean {
   return (
+    finding.rule !== "meaningless-change" &&
     finding.confidence >= MIN_CONFIDENCE_PUBLISH &&
-    (finding.rule === "meaningless-change" ||
-      severityWeight(finding.severity) >= severityWeight(MIN_PUBLISH_SEVERITY))
+    severityWeight(finding.severity) >= severityWeight(MIN_PUBLISH_SEVERITY)
   );
 }
 

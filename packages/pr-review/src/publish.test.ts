@@ -52,29 +52,20 @@ const meaninglessChange: Finding = {
 };
 
 describe("publishAssessment", () => {
-  it.each(["low", "info"] as const)(
-    "publishes parsed %s meaningless changes in the review body and inline comments",
+  it.each(["low", "info", "medium"] as const)(
+    "drops parsed %s meaningless changes from the review body and inline comments",
     async (severity) => {
       const finding = { ...meaninglessChange, severity };
       const parsed = parsePrReviewJson(
         JSON.stringify({
           ...review,
           overallTone: "comment",
-          findings: [
-            finding,
-            { ...finding, rule: "style-naming", message: "unwanted style nit" },
-            {
-              ...finding,
-              file: "src/unverified.ts",
-              confidence: 0.49,
-              message: "unsupported meaningless change",
-            },
-          ],
+          findings: [finding],
         }),
       );
       expect(parsed.outcome).toBe("valid");
       if (parsed.outcome !== "valid") return;
-      expect(parsed.review.findings).toEqual([finding]);
+      expect(parsed.review.findings).toEqual([]);
       const publishReview = vi
         .fn<GitHubReviewClient["publishReview"]>()
         .mockResolvedValue({ id: 7 });
@@ -94,20 +85,9 @@ describe("publishAssessment", () => {
       expect(publishReview).toHaveBeenCalledOnce();
       const published = publishReview.mock.calls[0]![0];
       expect(published.event).toBe("COMMENT");
-      expect(published.body).toContain("### 发现的问题 (1)");
-      expect(published.body).toContain(
-        `**${severity.toUpperCase()}** \`meaningless-change\``,
-      );
-      expect(published.body).toContain(finding.message);
-      expect(published.body).not.toContain("unwanted style nit");
-      expect(published.body).not.toContain("unsupported meaningless change");
-      expect(published.comments).toEqual([
-        {
-          path: finding.file,
-          line: finding.afterLine,
-          body: `**${severity.toUpperCase()}** · \`meaningless-change\`\n\n${finding.message}\n\n建议：${finding.suggestion}`,
-        },
-      ]);
+      expect(published.body).not.toContain("meaningless-change");
+      expect(published.body).not.toContain(finding.message);
+      expect(published.comments).toEqual([]);
     },
   );
 
@@ -207,7 +187,7 @@ describe("review rendering", () => {
     expect(reviewEventTone("comment")).toBe("COMMENT");
   });
 
-  it("keeps unanchored meaningless changes in the body without creating inline comments", async () => {
+  it("drops unanchored meaningless changes from the body", async () => {
     const parsed = parsePrReviewJson(
       JSON.stringify({
         ...review,
@@ -217,6 +197,7 @@ describe("review rendering", () => {
     );
     expect(parsed.outcome).toBe("valid");
     if (parsed.outcome !== "valid") return;
+    expect(parsed.review.findings).toEqual([]);
     const publishReview = vi
       .fn<GitHubReviewClient["publishReview"]>()
       .mockResolvedValue({ id: 8 });
@@ -232,8 +213,8 @@ describe("review rendering", () => {
       review: parsed.review,
     });
     const published = publishReview.mock.calls[0]![0];
-    expect(published.body).toContain("**INFO** `meaningless-change` src/a.ts");
-    expect(published.body).toContain(meaninglessChange.message);
+    expect(published.body).not.toContain("meaningless-change");
+    expect(published.body).not.toContain(meaninglessChange.message);
     expect(published.comments).toEqual([]);
   });
 
