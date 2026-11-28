@@ -185,6 +185,9 @@ const click = (element: Element) =>
   act(async () => {
     await userEvent.click(element);
   });
+/** 保存期间按钮文案会变成“处理中…”，必须等它恢复后再点，避免慢 CI 上的时序抖动。 */
+const clickSave = async () =>
+  click(await screen.findByRole("button", { name: "保存全局规则" }));
 async function showEditor() {
   render(
     <ToastProvider>
@@ -249,14 +252,14 @@ describe("global rule editor DOM → HTTP", () => {
     const editor = await showEditor();
     const draft = "  # New policy\n\n  - Preserve trailing newline.\n";
     fireEvent.change(editor, { target: { value: draft } });
-    await click(screen.getByRole("button", { name: "保存全局规则" }));
+    await clickSave();
     await waitFor(() => expect(content).toBe(draft));
     expect(puts()[0]?.body).toEqual({
       content: draft,
       expectedContentHash: hash(savedRules),
     });
     fireEvent.change(editor, { target: { value: "" } });
-    await click(screen.getByRole("button", { name: "保存全局规则" }));
+    await clickSave();
     await waitFor(() => expect(content).toBe(""));
     expect(puts()[1]?.body).toEqual({
       content: "",
@@ -283,7 +286,7 @@ describe("global rule editor DOM → HTTP", () => {
       importedRules,
     );
     expect(content).toBe(savedRules);
-    await click(screen.getByRole("button", { name: "保存全局规则" }));
+    await clickSave();
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(content).toBe((editor as HTMLTextAreaElement).value);
   });
@@ -314,7 +317,7 @@ describe("global rule editor DOM → HTTP", () => {
     expect(puts()).toHaveLength(0);
     await click(within(preview).getByRole("button", { name: "替换草稿" }));
     expect(editor).toHaveValue(importedRules);
-    await click(screen.getByRole("button", { name: "保存全局规则" }));
+    await clickSave();
     await waitFor(() => expect(content).toBe(importedRules));
     expect(puts()).toHaveLength(1);
   });
@@ -353,7 +356,7 @@ describe("global rule editor DOM → HTTP", () => {
     fireEvent.change(editor, { target: { value: "# My draft" } });
     content = "# Other administrator's change";
     conflict = true;
-    await click(screen.getByRole("button", { name: "保存全局规则" }));
+    await clickSave();
     expect(
       await screen.findByText(/草稿已保留|其他.*修改|已被修改/),
     ).toBeInTheDocument();
@@ -368,7 +371,7 @@ describe("global rule editor DOM → HTTP", () => {
       target: { value: "# Network must not lose this" },
     });
     disconnectSave = true;
-    await click(screen.getByRole("button", { name: "保存全局规则" }));
+    await clickSave();
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "保存全局规则" }),
